@@ -1,5 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { UpstreamServer } from "../db/types.js";
 import type { CredentialVault } from "../security/vault.js";
 import type { ToolCallResult, UpstreamToolClient } from "./UpstreamToolClient.js";
@@ -30,14 +30,23 @@ export class PerSessionUpstreamConnectionProvider implements UpstreamConnectionP
   constructor(private readonly vault: CredentialVault) {}
 
   async connect(server: UpstreamServer): Promise<ConnectedUpstream> {
-    const env = server.credential ? this.decryptEnv(server) : undefined;
+    const decryptedEnv = server.credential ? this.decryptEnv(server) : undefined;
 
     const client = new Client({ name: "mcp-trust-gateway", version: "0.1.0" });
     await client.connect(
       new StdioClientTransport({
         command: server.command,
         args: [...server.args],
-        env: env ? ({ ...process.env, ...env } as Record<string, string>) : undefined,
+        // Deliberately NOT { ...process.env, ...decryptedEnv } — that would hand every
+        // upstream server subprocess the gateway's OWN secrets (GATEWAY_ENCRYPTION_KEY,
+        // DATABASE_URL, GATEWAY_API_KEY), not just its own. A malicious or
+        // supply-chain-compromised upstream server (this is a real threat for
+        // community-published npm packages, not a hypothetical one) could otherwise
+        // exfiltrate the master key protecting every OTHER stored credential just by
+        // reading its own environment. getDefaultEnvironment() is the same safe,
+        // security-reviewed allowlist (HOME, PATH, USER, ...) the SDK itself uses when no
+        // env is given at all — we reuse it explicitly here since we always pass one.
+        env: { ...getDefaultEnvironment(), ...decryptedEnv },
       }),
     );
 
