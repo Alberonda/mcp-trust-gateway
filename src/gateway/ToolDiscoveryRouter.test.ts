@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AuditEntry, AuditLogRepository, AuditLogRow, StoredAuditEntry } from "../db/AuditLogRepository.js";
 import type { AllowedTools, PermissionRepository } from "../db/PermissionRepository.js";
-import type { Identity, UpstreamServer } from "../db/types.js";
+import type { RoleRepository } from "../db/RoleRepository.js";
+import type { NewUpstreamServer, UpstreamServerRepository } from "../db/UpstreamServerRepository.js";
+import type { EncryptedUpstreamCredential, Identity, Role, UpstreamServer, User } from "../db/types.js";
+import type { UserCredentialRepository } from "../db/UserCredentialRepository.js";
+import type { UserRepository } from "../db/UserRepository.js";
+import { CredentialVault } from "../security/vault.js";
+import { AdminToolHandler } from "./AdminToolHandler.js";
+import { SelfServiceHandler } from "./SelfServiceHandler.js";
 import { ToolCallHandler } from "./ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "./ToolDiscoveryRouter.js";
 import type { ToolCallResult, UpstreamToolClient } from "./UpstreamToolClient.js";
@@ -34,6 +41,83 @@ class FakePermissionRepository implements PermissionRepository {
     if (!allowed) return new Set();
     return allowed === "*" ? "all" : allowed;
   }
+}
+
+class FakeUpstreamServerRepository implements UpstreamServerRepository {
+  async findByName(): Promise<UpstreamServer | null> {
+    return null;
+  }
+  async findManyByIds(): Promise<UpstreamServer[]> {
+    return [];
+  }
+  async findAll(): Promise<UpstreamServer[]> {
+    return [];
+  }
+  async create(_server: NewUpstreamServer): Promise<UpstreamServer> {
+    throw new Error("not used in these tests");
+  }
+}
+
+class FakeUserCredentialRepository implements UserCredentialRepository {
+  async find(): Promise<EncryptedUpstreamCredential | null> {
+    return null;
+  }
+  async upsert(): Promise<void> {}
+  async remove(): Promise<void> {}
+}
+
+class FakeRoleRepository implements RoleRepository {
+  async create(): Promise<Role> {
+    throw new Error("not used in these tests");
+  }
+  async findByName(): Promise<Role | null> {
+    return null;
+  }
+  async findById(): Promise<Role | null> {
+    return null;
+  }
+  async listAll(): Promise<Role[]> {
+    return [];
+  }
+  async findRolesForUser(): Promise<Role[]> {
+    return [];
+  }
+  async isUserAdmin(): Promise<boolean> {
+    return true;
+  }
+  async assignToUser(): Promise<void> {}
+  async unassignFromUser(): Promise<void> {}
+  async remove(): Promise<void> {}
+}
+
+class FakeUserRepository implements UserRepository {
+  async create(): Promise<User> {
+    throw new Error("not used in these tests");
+  }
+  async findById(): Promise<User | null> {
+    return null;
+  }
+  async findByName(): Promise<User | null> {
+    return null;
+  }
+  async listAll(): Promise<User[]> {
+    return [];
+  }
+  async remove(): Promise<void> {}
+}
+
+/** Builds a real SelfServiceHandler wired to fakes — none of the tests in this file
+ *  exercise list_services/register_my_credential's own behavior directly (see
+ *  SelfServiceHandler.test.ts for that); this only exists so ToolDiscoveryRouter has a
+ *  real instance to hold, matching what the composition root always provides. */
+function buildSelfService(permissions: PermissionRepository = new FakePermissionRepository({})): SelfServiceHandler {
+  return new SelfServiceHandler(
+    identity.userId,
+    permissions,
+    new FakeUpstreamServerRepository(),
+    new FakeUserCredentialRepository(),
+    new CredentialVault(Buffer.alloc(32, 1)),
+  );
 }
 
 class NullAuditLogRepository implements AuditLogRepository {
@@ -88,8 +172,12 @@ function buildHandler(
 
 /** Most tests don't care about the router's own audit log — this defaults to a no-op one
  *  so call sites only need to opt in (pass their own AuditLogRepository) when they do. */
-function buildRouter(handlers: readonly ToolCallHandler[], auditLog: AuditLogRepository = new NullAuditLogRepository()) {
-  return new ToolDiscoveryRouter(handlers, identity, auditLog);
+function buildRouter(
+  handlers: readonly ToolCallHandler[],
+  auditLog: AuditLogRepository = new NullAuditLogRepository(),
+  adminHandler?: AdminToolHandler,
+) {
+  return new ToolDiscoveryRouter(handlers, identity, auditLog, buildSelfService(), adminHandler);
 }
 
 test("find_tool only surfaces servers/tools this identity has a grant for", async () => {
@@ -243,7 +331,7 @@ test("handleMetaToolCall rejects any tool name other than the two meta-tools", a
   assert.match(result.content?.[0]?.text ?? "", /Unknown tool/);
 });
 
-test("listMetaTools always returns exactly the two meta-tools, regardless of how many real servers/tools exist", async () => {
+test("listMetaTools always returns the same fixed set of meta-tools, regardless of how many real servers/tools exist", async () => {
   const permissions = new FakePermissionRepository({ "server-a": "*", "server-b": "*", "server-c": "*" });
   const manyTools = Array.from({ length: 50 }, (_, i) => ({ name: `tool_${i}`, description: `tool number ${i}` }));
   const router = buildRouter([
@@ -254,5 +342,41 @@ test("listMetaTools always returns exactly the two meta-tools, regardless of how
 
   const { tools } = router.listMetaTools();
 
-  assert.equal(tools.length, 2, "tools/list payload must stay at exactly 2 meta-tools no matter how many real tools exist behind the gateway");
+  assert.equal(
+    tools.length,
+    4,
+    "tools/list payload must stay at exactly 4 meta-tools (find_tool, call_tool, list_services, " +
+      "register_my_credential) no matter how many real tools exist behind the gateway",
+  );
+});
+
+test("listMetaTools omits manage_roles when no adminHandler is supplied", async () => {
+  const router = buildRouter([]);
+
+  const { tools } = router.listMetaTools();
+
+  assert.ok(!(tools as { name: string }[]).some((t) => t.name === "manage_roles"), "manage_roles must not be visible to a non-admin");
+});
+
+test("listMetaTools includes manage_roles only when an adminHandler is supplied", async () => {
+  const adminHandler = new AdminToolHandler(
+    new FakeRoleRepository(),
+    new FakeUserRepository(),
+    new FakeUpstreamServerRepository(),
+    new FakeUserCredentialRepository(),
+  );
+  const router = buildRouter([], new NullAuditLogRepository(), adminHandler);
+
+  const { tools } = router.listMetaTools();
+
+  assert.ok((tools as { name: string }[]).some((t) => t.name === "manage_roles"), "manage_roles must be visible when an admin handler is supplied");
+});
+
+test("handleMetaToolCall('manage_roles', ...) is rejected when no adminHandler is supplied, even if called directly", async () => {
+  const router = buildRouter([]);
+
+  const result = await router.handleMetaToolCall("manage_roles", { action: "list_roles" });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content?.[0]?.text ?? "", /only available to admins/);
 });

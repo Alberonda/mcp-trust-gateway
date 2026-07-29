@@ -17,6 +17,10 @@ export interface UpstreamServerRepository {
    *  on (see PermissionRepository.findAccessibleServerIds) into the details needed to
    *  actually connect to each one. Empty input returns an empty array without a query. */
   findManyByIds(ids: readonly string[]): Promise<UpstreamServer[]>;
+  /** Every registered server, permitted or not — the whitelist itself. Used by
+   *  SelfServiceHandler.listServices to show a user what exists even for servers they
+   *  don't (yet) have permission on, so they know what to ask an admin for. */
+  findAll(): Promise<UpstreamServer[]>;
 
   /** Registers a new upstream server — see NewUpstreamServer for why this mirrors
    *  standard MCP client config shape directly, minus any credential. */
@@ -53,6 +57,11 @@ export class PostgresUpstreamServerRepository implements UpstreamServerRepositor
       `SELECT ${UPSTREAM_SERVER_COLUMNS} FROM upstream_servers WHERE id = ANY($1)`,
       [ids],
     );
+    return rows.map(mapRow);
+  }
+
+  async findAll(): Promise<UpstreamServer[]> {
+    const { rows } = await this.db.query<UpstreamServerRow>(`SELECT ${UPSTREAM_SERVER_COLUMNS} FROM upstream_servers ORDER BY name`);
     return rows.map(mapRow);
   }
 

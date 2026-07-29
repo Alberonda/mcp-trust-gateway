@@ -812,6 +812,81 @@ dos fuentes de verdad." Investigated whether that's actually achievable.
   request-dispatch protocol) before Phase 3.5's role-based-access-control work took
   priority instead.
 
+### Role-based access control + self-service credentials — done, 2026-07-29
+
+Two direct questions in the same conversation drove this:
+
+1. *"Each real user will have their own PAT — am I serving MY credentials to other
+   users?"* Already fixed earlier today (per-user credentials, then removing the shared
+   default entirely). But permissions themselves were still granted **per user**,
+   one-off — no real organization assigns access that way; they assign it by role
+   ("developer", "hr", "marketing"), and a superior "admin" role manages the rest.
+2. *"I don't want my credentials to be part of the solution — I want users to configure
+   things at their own will, starting with zero access, discovering and registering their
+   own credentials for whatever their role permits."*
+
+**Schema** (`migrations/007_roles.sql`): new `roles` (`id, name, is_admin`) and
+`user_roles` (`user_id, role_id`) tables. `permissions.user_id` → `permissions.role_id` —
+a user's effective access is now the union of every role they hold. Backfill: every user
+who had any existing grant gets their own personal, identically-named role carrying over
+their exact prior access (lossless — no one's access changed as a result of migrating),
+which operators can move onto real shared roles afterward.
+
+- `db/RoleRepository.ts` (new): create/remove roles, assign/unassign to users,
+  `isUserAdmin`, `findRolesForUser`.
+- `db/PermissionRepository.ts`: every query now joins through `user_roles` to resolve a
+  user's roles first — callers (composition roots, `ToolCallHandler`) needed **zero**
+  changes; the role indirection is entirely internal to this repository.
+- `db/UserRepository.ts`: added `findByName`/`listAll`/`remove` (previously just
+  `create`/`findById`) — needed by the new admin tool to look users up by name.
+- `db/UpstreamServerRepository.ts`: added `findAll()` — the self-service listing needs
+  "every registered server, permitted or not," which `findManyByIds` (built for "servers
+  *this* user can reach") can't express.
+
+**New meta-tools**, alongside `find_tool`/`call_tool`:
+- `list_services` (always visible): every registered server (the whitelist) with this
+  user's status for it — `ready` (has a working credential), `needs_credential`
+  (permitted, not configured yet), or `not_permitted` (ask an admin). Listing what
+  *exists* isn't a security leak — only *using* one is gated — same principle as Claude
+  Code showing every configured MCP whether or not you've authenticated with it.
+- `register_my_credential` (always visible): lets a user set their own credential for a
+  server **they already hold role-granted permission on** — never grants that permission
+  itself. Deliberate separation of concerns: an admin decides *who can use what*; a user
+  decides *with which exact credential*.
+- `manage_roles` (admin-only): create/delete roles, assign/unassign to users, list
+  roles/users, delete a user or a stored credential. Only appears in `tools/list` when
+  the composition root's `roles.isUserAdmin(userId)` check is true for the connecting
+  user — checked once per session, the same trust boundary every other per-session
+  decision here already uses. `gateway/AdminToolHandler.ts` itself does **not** re-check
+  admin status on every call, by design: if it exists for a session, the composition root
+  already confirmed the caller is an admin, same as `ToolCallHandler` never re-verifying
+  "is this server real."
+- `gateway/SelfServiceHandler.ts` and `AdminToolHandler.ts` are genuinely separate
+  classes from `ToolDiscoveryRouter`, which now only *orchestrates* — merges tool lists,
+  dispatches by name — never containing role/credential logic itself.
+- `scripts/bootstrap_admin.ts` (new): grants one named user the admin role. Deliberately
+  **not** run automatically by the migration — silently granting admin to whoever existed
+  in the database at migration time would be a real privilege-escalation surprise, not a
+  convenience.
+- **A real correctness fix that fell out of this**: both composition roots used to throw
+  if an identity had zero permission grants at all ("has no permission grants on any
+  upstream server"). That's wrong now — a brand-new user with no access yet still needs
+  to connect and use `list_services`/`register_my_credential` to see what exists and
+  configure themselves once an admin grants their role access. Removed the throw in both
+  `index.ts` and `httpGateway/httpServer.ts`.
+- **Verified against the real gateway process, not just the repository/handler layers**:
+  created two real roles (`developer`, `admin`), two real users, connected as each
+  through the real stdio gateway. The developer-role user saw exactly `find_tool`,
+  `call_tool`, `list_services`, `register_my_credential` — never `manage_roles` — and
+  `list_services` correctly showed every other registered server as `not_permitted`, the
+  one granted server as `needs_credential`, then successfully registered her own
+  credential for it. The admin-role user saw all five tools including `manage_roles`, and
+  a real `list_roles` call returned the actual roles table. Also ran
+  `scripts/bootstrap_admin.ts` for real against the operator's own account and confirmed
+  `manage_roles` appeared afterward.
+- 129 tests total (78 unit + 51 integration), all green. Applied to both the local dev
+  database and the Neon-hosted deployment.
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no
@@ -853,12 +928,12 @@ Not exhaustive either; real use will surface more. Grouped by what kind of gap e
       automatically before it lands.
 - [ ] **No automated tests for either composition root** (`index.ts`, `httpGateway/
       httpServer.ts`) — both covered by real but manual smoke tests only (see "Testing").
-- [ ] **No `/health` endpoint on HTTP mode** — no standard place for a load balancer or
-      monitoring system to ask "is this instance alive."
-- [ ] **No admin tooling for users/permissions.** Granting access today means hand-written
-      SQL or one-off scripts built for demos (`scripts/lib/provisionUser.ts`,
-      `scripts/seed_phase2_demo.ts`) — there's no real "add a user, grant them a server"
-      command meant for repeated operational use.
+- [x] ~~No `/health` endpoint on HTTP mode~~ — done: `GET /health` in `httpGateway/
+      httpServer.ts`, unauthenticated, checks real Postgres connectivity.
+- [x] ~~No admin tooling for users/permissions~~ — done, see "Role-based access control +
+      self-service credentials": `manage_roles` (admin-only meta-tool) plus
+      `scripts/bootstrap_admin.ts` for the first admin. Still no *web UI* for this, only
+      the conversational tool + one CLI script — revisit if that turns out to matter.
 - [ ] **No high availability story.** HTTP mode is one process; if it goes down, the
       service is down until something restarts it manually.
 - [ ] **Nothing supervises the process.** No `systemd`/PM2/container restart policy

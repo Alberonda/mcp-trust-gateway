@@ -12,8 +12,9 @@ first in any new session.
 
 ## Status
 
-Phases 1, 2, 2.5, and 3 are complete and verified against real Postgres and real MCP
-servers — not just intended behavior. 90 automated tests (58 unit + 32 integration), plus:
+Phases 1 through 3.5, plus role-based access control and self-service credentials, are
+complete and verified against real Postgres and real MCP servers — not just intended
+behavior. 129 automated tests (78 unit + 51 integration), plus:
 
 - **Governance holds across multiple servers**: an identity can only discover/call tools on
   servers it has a grant for, verified against two real filesystem MCP servers with
@@ -34,6 +35,15 @@ servers — not just intended behavior. 90 automated tests (58 unit + 32 integra
   credential for a server — see "Operator tools" below) and `scripts/view_audit_log.ts`
   (a filterable CLI over the audit trail), both exercised against real data, not just
   their own tests.
+- **Access is role-based, and users can self-configure**: permissions are granted to
+  roles (e.g. "developer", "hr"), not individual users — a user's access is the union of
+  every role they hold. Beyond `find_tool`/`call_tool`, every user always has
+  `list_services` (see what's permitted vs. what still needs a credential) and
+  `register_my_credential` (set their own credential for something they're already
+  permitted on — never grants that permission itself). An `admin` role additionally gets
+  `manage_roles`, hidden entirely from non-admins. Verified end to end with two real
+  roles and two real users against the real gateway process, not just at the schema
+  level — see DESIGN.md's "Role-based access control + self-service credentials".
 
 See `DESIGN.md`'s status log and phase sections for the full detail.
 
@@ -260,9 +270,17 @@ they work regardless of which deployment mode you're using.
 # server-level default to fall back to (see DESIGN.md's "Remove the shared default
 # upstream credential") -- every user, including whoever registered the server, needs
 # their own row here for anything that needs credentials at all. Pass the FULL env map
-# the server needs, not just the one value that changed.
+# the server needs, not just the one value that changed. Most users should do this
+# themselves via the register_my_credential meta-tool instead -- this script is for an
+# operator setting it on someone else's behalf.
 DATABASE_URL=... GATEWAY_ENCRYPTION_KEY=... \
   npx tsx scripts/set_user_credential.ts <user-name> <server-name> '{"KEY":"this-users-own-value"}'
+
+# Bootstrap the very first admin (creates the admin role if it doesn't exist yet, and
+# grants it to a named, already-provisioned user). Deliberately a manual, one-off step --
+# never run automatically by a migration. Every admin after the first can be made one via
+# the manage_roles meta-tool instead.
+DATABASE_URL=... npx tsx scripts/bootstrap_admin.ts <user-name>
 
 # Query the audit trail — every filter is optional
 DATABASE_URL=... npx tsx scripts/view_audit_log.ts \
@@ -272,4 +290,22 @@ DATABASE_URL=... npx tsx scripts/view_audit_log.ts \
 Registering a new server (`scripts/lib/registerServer.ts`) uses the same `{command, args}`
 shape as any MCP client config, minus `env` — a server never carries its own credential
 (see "Remove the shared default upstream credential"); use `set_user_credential.ts`
-above once it's registered, for each user who needs one.
+above (or, better, have the user run `register_my_credential` themselves) once it's
+registered.
+
+## Roles and self-service
+
+Permissions are granted to **roles**, not individual users — see `migrations/007_roles.sql`.
+A user's effective access is the union of every role they hold. Beyond `find_tool`/
+`call_tool`, every connected user always has two more meta-tools:
+
+- **`list_services`**: every registered server and this user's status for it —
+  `ready`, `needs_credential`, or `not_permitted`.
+- **`register_my_credential({server, env})`**: set your own credential for a server
+  you're already permitted on. Never grants that permission itself.
+
+A user whose role has `is_admin = true` additionally gets `manage_roles({action, ...})`
+— `create_role`, `delete_role`, `assign_role`, `unassign_role`, `list_roles`,
+`list_users`, `delete_user`, `delete_credential`. Completely hidden from `tools/list` for
+anyone else — not just undocumented, structurally absent from what a non-admin's session
+can even see or call.

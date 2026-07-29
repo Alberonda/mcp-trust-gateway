@@ -1,11 +1,24 @@
 /** Domain types shared by every repository — plain data, no SQL or pg-specific shapes. */
 
-/** A person or agent that permissions are actually granted to. One user can hold several
- *  identities (e.g. a laptop key and a CI key) that all share the same grants — see
- *  DESIGN.md's Phase 3 for why permissions moved from per-identity to per-user. */
+/** A person or agent that permissions are actually granted to (indirectly, via roles —
+ *  see Role below). One user can hold several identities (e.g. a laptop key and a CI
+ *  key) that all share the same grants — see DESIGN.md's Phase 3 for why permissions
+ *  moved from per-identity to per-user, and its later role-based-access-control section
+ *  for why they moved from per-user to per-role on top of that. */
 export interface User {
   readonly id: string;
   readonly name: string;
+}
+
+/** What permissions are actually granted to (see migrations/007_roles.sql) — a user's
+ *  effective access is the union of every role they hold. `isAdmin` roles may manage
+ *  roles/users/credentials via the manage_roles meta-tool (see
+ *  gateway/AdminToolHandler.ts) — there is nothing special about the *user* holding an
+ *  admin role, only the role itself. */
+export interface Role {
+  readonly id: string;
+  readonly name: string;
+  readonly isAdmin: boolean;
 }
 
 /** One credential (API key or session token) that authenticates as a user. Permission

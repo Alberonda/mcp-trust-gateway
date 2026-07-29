@@ -3,22 +3,31 @@ import type { AllowedTools } from "../db/PermissionRepository.js";
 import type { AuditLogRepository } from "../db/AuditLogRepository.js";
 import type { Identity } from "../db/types.js";
 import { redact } from "../redact.js";
+import type { AdminToolHandler } from "./AdminToolHandler.js";
+import type { SelfServiceHandler } from "./SelfServiceHandler.js";
 import type { ToolCallHandler } from "./ToolCallHandler.js";
 import type { ToolCallResult } from "./UpstreamToolClient.js";
 
 /**
  * The Phase 2 differentiator (see DESIGN.md's "Competitive landscape & differentiation"):
  * instead of an agent's context paying for every real tool's full JSON schema across every
- * connected server, the gateway exposes exactly two meta-tools — find_tool and call_tool —
- * regardless of how many real servers/tools sit behind it. Composes one ToolCallHandler per
- * accessible server without modifying ToolCallHandler itself (Open/Closed).
+ * connected server, the gateway exposes a small, fixed set of meta-tools regardless of how
+ * many real servers/tools sit behind it. find_tool/call_tool are always present;
+ * list_services/register_my_credential are always present (self-service, but never
+ * self-granted permission — see SelfServiceHandler); manage_roles is present only when
+ * `adminHandler` is supplied, which the composition root only does for identities whose
+ * user holds an admin role. Composes one ToolCallHandler per accessible server without
+ * modifying ToolCallHandler itself (Open/Closed).
  */
 
-/** Single source of truth for the two meta-tool names — referenced by both META_TOOLS'
- *  own schema entries and handleMetaToolCall's dispatch, so the two can never drift apart. */
+/** Single source of truth for every meta-tool's name — referenced by both the tool
+ *  schemas below and handleMetaToolCall's dispatch, so the two can never drift apart. */
 const MetaTool = {
   FindTool: "find_tool",
   CallTool: "call_tool",
+  ListServices: "list_services",
+  RegisterMyCredential: "register_my_credential",
+  ManageRoles: "manage_roles",
 } as const;
 
 export interface DiscoveredTool {
@@ -27,9 +36,7 @@ export interface DiscoveredTool {
   readonly description: string;
 }
 
-/** The two meta-tools' own schemas — this is the entire tools/list payload an agent pays
- *  context for, no matter how many real servers/tools are registered behind the gateway. */
-export const META_TOOLS = [
+const CORE_TOOLS = [
   {
     name: MetaTool.FindTool,
     description:
@@ -51,6 +58,54 @@ export const META_TOOLS = [
         arguments: { type: "object", description: "Arguments for the underlying tool" },
       },
       required: ["server", "tool"],
+    },
+  },
+] as const;
+
+const SELF_SERVICE_TOOLS = [
+  {
+    name: MetaTool.ListServices,
+    description:
+      "See every registered server and your status for each: \"ready\" (you have a working credential), " +
+      "\"needs_credential\" (you're permitted but haven't configured one yet — use register_my_credential), " +
+      "or \"not_permitted\" (ask an admin to grant your role access first).",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: MetaTool.RegisterMyCredential,
+    description:
+      "Set your own credential for a server you already have permission on (see list_services). " +
+      "Never grants permission itself — only an admin can do that.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        server: { type: "string", description: "The server name from list_services" },
+        env: { type: "object", description: "Every env var the server needs, e.g. {\"API_TOKEN\": \"...\"}" },
+      },
+      required: ["server", "env"],
+    },
+  },
+] as const;
+
+const ADMIN_TOOLS = [
+  {
+    name: MetaTool.ManageRoles,
+    description:
+      "Admin-only: manage roles, role assignments, users, and stored credentials. " +
+      "Actions: create_role({name, isAdmin}), delete_role({name}), assign_role({userName, roleName}), " +
+      "unassign_role({userName, roleName}), list_roles(), list_users(), delete_user({userName}), " +
+      "delete_credential({userName, serverName}).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string" },
+        name: { type: "string" },
+        isAdmin: { type: "boolean" },
+        userName: { type: "string" },
+        roleName: { type: "string" },
+        serverName: { type: "string" },
+      },
+      required: ["action"],
     },
   },
 ] as const;
@@ -81,13 +136,17 @@ export class ToolDiscoveryRouter {
      *  ToolCallHandler that already owns identity/audit wiring for its own server. */
     private readonly identity: Identity,
     private readonly auditLog: AuditLogRepository,
+    private readonly selfService: SelfServiceHandler,
+    /** Present only for identities whose user holds an admin role — deciding that is the
+     *  composition root's job (see this class's own docstring), not this router's. */
+    private readonly adminHandler: AdminToolHandler | undefined = undefined,
     /** Injectable so tests get deterministic, non-flaky duration_ms values — same pattern
      *  as ToolCallHandler's own clock. */
     private readonly now: () => number = Date.now,
   ) {}
 
-  listMetaTools(): { tools: typeof META_TOOLS } {
-    return { tools: META_TOOLS };
+  listMetaTools(): { tools: unknown[] } {
+    return { tools: [...CORE_TOOLS, ...SELF_SERVICE_TOOLS, ...(this.adminHandler ? ADMIN_TOOLS : [])] };
   }
 
   /** Searches every accessible server's real tool list by name/description substring match
@@ -143,10 +202,10 @@ export class ToolDiscoveryRouter {
     return handler.callTool(tool, args);
   }
 
-  /** The one entry point the composition root needs for tools/call — dispatches to
-   *  find_tool or call_tool by name and formats the response as an MCP tool result. Kept
-   *  here rather than in index.ts because "how does a meta-tool call turn into a response"
-   *  is this router's concern, not composition-root wiring. */
+  /** The one entry point the composition root needs for tools/call — dispatches by name
+   *  and formats the response as an MCP tool result. Kept here rather than in index.ts
+   *  because "how does a meta-tool call turn into a response" is this router's concern,
+   *  not composition-root wiring. */
   async handleMetaToolCall(name: string, args: unknown): Promise<ToolCallResult> {
     const params = (args ?? {}) as Record<string, unknown>;
 
@@ -168,9 +227,31 @@ export class ToolDiscoveryRouter {
       return this.callTool(server, tool, params.arguments);
     }
 
+    if (name === MetaTool.ListServices) {
+      const services = await this.selfService.listServices();
+      return { content: [{ type: "text", text: JSON.stringify(services, null, 2) }] };
+    }
+
+    if (name === MetaTool.RegisterMyCredential) {
+      const server = typeof params.server === "string" ? params.server : undefined;
+      const env = params.env && typeof params.env === "object" ? (params.env as Record<string, string>) : undefined;
+      if (!server || !env) {
+        return { isError: true, content: [{ type: "text", text: 'register_my_credential requires "server" and "env".' }] };
+      }
+      return this.selfService.registerMyCredential(server, env);
+    }
+
+    if (name === MetaTool.ManageRoles) {
+      if (!this.adminHandler) {
+        return { isError: true, content: [{ type: "text", text: "manage_roles is only available to admins." }] };
+      }
+      const action = typeof params.action === "string" ? params.action : "";
+      return this.adminHandler.handle(action, params);
+    }
+
     return {
       isError: true,
-      content: [{ type: "text", text: `Unknown tool "${name}". Only find_tool and call_tool are exposed — call find_tool first.` }],
+      content: [{ type: "text", text: `Unknown tool "${name}". Call find_tool first to see what's available.` }],
     };
   }
 }
