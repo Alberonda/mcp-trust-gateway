@@ -1,17 +1,31 @@
 # MCP Trust Gateway
 
 A transparent proxy that sits between any MCP client (Devin CLI, Claude Desktop, Cursor...)
-and real MCP servers, adding the trust/control plane most agent tooling is currently missing:
-per-identity permissions, encrypted credential brokering, and a structured, redacted audit
-log of every tool call.
+and real MCP servers, adding what most agent tooling in this space is missing at once:
+per-identity permissions across multiple servers, encrypted credential brokering, a
+structured/redacted audit trail, *and* on-demand tool discovery so an agent's context cost
+doesn't grow with every server you connect (measured 97.1% reduction — see below).
 
-See [`DESIGN.md`](./DESIGN.md) for the full motivation (validated against 2026 research on
-gaps in agent tooling), architecture, and phased plan — read that first in any new session.
+See [`DESIGN.md`](./DESIGN.md) for the full motivation (validated against 2026 research,
+including a full competitive-landscape review), architecture, and phased plan — read that
+first in any new session.
 
 ## Status
 
-Phase 1 (MVP) is functionally complete and verified end to end against a real Postgres and
-the official filesystem MCP server. See `DESIGN.md`'s status log for details and what's next.
+Phases 1 and 2 are complete and verified against real Postgres and real MCP servers — not
+just intended behavior. 51 automated tests (34 unit + 17 integration), plus two specific,
+falsifiable claims proven with real measurements:
+
+- **Governance holds across multiple servers**: an identity can only discover/call tools on
+  servers it has a grant for, verified against two real filesystem MCP servers with
+  different permissions per identity — including the audit trail for a denied cross-server
+  attempt (`scripts/manual_test_phase2.ts`).
+- **Context cost stays flat**: `tools/list` through the gateway is a fixed 2 meta-tools
+  regardless of how many real servers/tools sit behind it — measured with a real tokenizer
+  at **97.1% fewer tokens** than a direct multi-server connection
+  (`scripts/measure_context_overhead.ts`).
+
+See `DESIGN.md`'s status log and Phase 2 section for the full detail.
 
 ## Setup
 
@@ -65,12 +79,11 @@ e.g. in Devin CLI / Claude Desktop's MCP config:
 ```json
 {
   "mcpServers": {
-    "github-via-gateway": {
+    "trust-gateway": {
       "command": "node",
       "args": ["/path/to/mcp-trust-gateway/dist/index.js"],
       "env": {
         "GATEWAY_API_KEY": "mtg_...",
-        "UPSTREAM_SERVER_NAME": "github",
         "DATABASE_URL": "postgres://...",
         "GATEWAY_ENCRYPTION_KEY": "..."
       }
@@ -78,3 +91,8 @@ e.g. in Devin CLI / Claude Desktop's MCP config:
   }
 }
 ```
+
+Note there's no `UPSTREAM_SERVER_NAME` (or similar) here — as of Phase 2, the gateway
+connects to *every* server this API key's identity has any permission grant on, derived
+from the `permissions` table, and exposes them all through the same two meta-tools
+(`find_tool`, `call_tool`). One MCP client entry, many governed servers behind it.

@@ -78,3 +78,43 @@ test(
     assert.equal(allowed, false);
   }),
 );
+
+test(
+  "findAccessibleServerIds returns every distinct server this identity has any grant on",
+  withTransaction(async ({ db }) => {
+    const { identityId, serverId: serverA } = await seedIdentityAndServer(db);
+    const {
+      rows: [serverB],
+    } = await db.query<{ id: string }>(`INSERT INTO upstream_servers (name, command) VALUES ('b', 'cmd') RETURNING id`);
+    const {
+      rows: [serverC],
+    } = await db.query<{ id: string }>(`INSERT INTO upstream_servers (name, command) VALUES ('c', 'cmd') RETURNING id`);
+    await db.query(`INSERT INTO permissions (identity_id, server_id, tool_name) VALUES ($1, $2, 'read_file')`, [
+      identityId,
+      serverA,
+    ]);
+    await db.query(`INSERT INTO permissions (identity_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
+      identityId,
+      serverB.id,
+    ]);
+    // Deliberately no permission row for serverC — it must not appear below.
+    void serverC;
+
+    const accessible = await new PostgresPermissionRepository(db).findAccessibleServerIds(identityId);
+
+    assert.deepEqual(new Set(accessible), new Set([serverA, serverB.id]));
+  }),
+);
+
+test(
+  "findAccessibleServerIds returns an empty list for an identity with no grants at all",
+  withTransaction(async ({ db }) => {
+    const {
+      rows: [identity],
+    } = await db.query<{ id: string }>(`INSERT INTO identities (name, api_key_hash) VALUES ('lonely', 'h') RETURNING id`);
+
+    const accessible = await new PostgresPermissionRepository(db).findAccessibleServerIds(identity.id);
+
+    assert.deepEqual(accessible, []);
+  }),
+);

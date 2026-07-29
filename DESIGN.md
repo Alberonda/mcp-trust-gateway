@@ -232,20 +232,50 @@ excluded from the production build (`tsconfig.json`'s `exclude`).
       tests (`npm run test:integration`) covering every Postgres repository against a real
       database. `index.ts` itself is still only covered by the manual smoke test.
 
-### Phase 2 (reprioritized 2026-07-29 — this is the actual differentiator, see
+### Phase 2 — complete and verified 2026-07-29 (the actual differentiator, see
 ### "Competitive landscape & differentiation" above)
-- [ ] Lift the "one upstream server per gateway process" constraint — one gateway process/
-      identity should be able to reach several registered `upstream_servers` rows.
-- [ ] On-demand tool discovery: instead of `tools/list` forwarding every real tool's full
-      schema, expose a small, fixed set of meta-tools (e.g. `find_tool(query)`,
-      `call_tool(name, args)`) so the agent's context cost stays constant regardless of how
-      many real tools/servers are registered. `find_tool` searches across every server the
-      calling identity has permission for; `call_tool` reuses the existing `ToolCallHandler`
-      policy unchanged (permission check → forward → audit still applies per underlying
-      call).
-- [ ] Re-verify the manual smoke test and the ToolCallHandler test suite still pass with
-      multiple registered servers, including that `find_tool` never surfaces a tool the
-      calling identity isn't permitted to call.
+
+Two falsifiable claims were defined before writing any code (see the verification plan
+from that session) — both were proven with real measurements, not intended behavior:
+
+**Claim A — governance holds across multiple servers.** *"An identity can only discover
+and call tools it has permission for, even when the gateway is connected to N ≥ 2 upstream
+servers."*
+- [x] `PermissionRepository.findAccessibleServerIds()` + `UpstreamServerRepository
+      .findManyByIds()` — the composition root connects to every server an identity has
+      any grant on, derived from the permissions table, no longer a single env var.
+- [x] `ToolDiscoveryRouter` composes one `ToolCallHandler` per accessible server (Open/
+      Closed — `ToolCallHandler` itself untouched) and exposes exactly two meta-tools,
+      `find_tool`/`call_tool`, regardless of how many real servers/tools sit behind it.
+      `find_tool` re-checks `ToolCallHandler.isToolAllowed()` per candidate, so discovery
+      is exactly as strict as calling — never a way to enumerate tools you can't call.
+- [x] 7 new unit tests (`ToolDiscoveryRouter.test.ts`) directly demonstrating Claim A with
+      fakes: cross-server leakage, tool-level (not just server-level) filtering, denied
+      calls never reaching a handler, and an unregistered-server call still writing an
+      audit entry (a real gap found manually — see below).
+- [x] **Verified against two real filesystem MCP servers** (`scripts/seed_phase2_demo.ts`
+      + `scripts/manual_test_phase2.ts`): `narrow-agent` (permission on `sandbox-a` only)
+      never sees or can call anything on `sandbox-b`; `broad-agent` (both) sees and calls
+      both. Confirmed in the real `audit_log` table, not just process output.
+  - **Gap found and fixed during manual verification**: a call to a server the identity
+    was never even connected to (zero grants) returned a clean "Unknown server" error but
+    wrote *no* audit entry — the rejection happened in `ToolDiscoveryRouter` before
+    reaching any `ToolCallHandler`. Fixed by giving the router its own narrow
+    identity+audit-log dependency for exactly this one case, so "complete audit trail of
+    every decision" is actually true, not true-with-an-asterisk.
+
+**Claim B — context-window cost stays flat.** *"The token size of `tools/list` stays
+~constant regardless of how many real tools/servers are registered."*
+- [x] `scripts/measure_context_overhead.ts` — real `gpt-tokenizer` (o200k_base encoding)
+      token counts, not estimates, comparing a direct multi-server MCP connection against
+      the same servers through the gateway.
+  - **Measured, 2 real filesystem servers**: direct connection = 5,594 tokens; through the
+    gateway = 163 tokens (the two meta-tools' own schemas) — **97.1% reduction**, measured.
+  - Extrapolated (clearly labeled as such, not measured) from the per-server average to
+    N=5/10/20 servers: reduction climbs toward ~99-100% as more servers are added, since
+    the gateway's cost is constant while direct-connection cost grows linearly per server.
+
+Total automated coverage after Phase 2: **51 tests** (34 unit + 17 integration), all green.
 
 ### Phase 3 (was Phase 2 — parity/hygiene, still worth doing, just not the differentiator)
 - [ ] Replace static API keys with short-lived session tokens (issued after some login step)
@@ -262,6 +292,12 @@ excluded from the production build (`tsconfig.json`'s `exclude`).
 
 ## Status log
 
+- **2026-07-29 (later still)**: Phase 2 shipped and verified — see the Phase 2 section
+  above for the full detail. Summary: defined two falsifiable claims before writing code,
+  proved both with real measurements (not fakes-only, not "should work"): governance holds
+  across multiple real servers (audited, including a gap found and fixed during manual
+  verification), and `tools/list` token cost dropped 97.1% (measured with a real tokenizer
+  against 2 real MCP servers) versus a direct multi-server connection. 51 tests total.
 - **2026-07-29 (end of day)**: Ran a proper competitive-landscape check after a direct
   challenge ("if this doesn't exist, is it because nobody needed it?"). Found ~10 existing
   MCP gateways with auth/RBAC/audit, including Microsoft and IBM official projects and
