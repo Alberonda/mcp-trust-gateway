@@ -1,0 +1,28 @@
+{
+  "name": "@alberonda/mcp-trust-gateway-bridge",
+  "version": "0.1.0",
+  "description": "Thin stdio-to-HTTP relay for mcp-trust-gateway's HTTP mode -- holds only your GATEWAY_API_KEY locally, never the database URL or master encryption key. See ../README.md's 'Connecting without a local process' section.",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "mcp-trust-gateway-bridge": "dist/index.js"
+  },
+  "files": ["dist"],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
