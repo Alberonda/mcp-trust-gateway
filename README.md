@@ -333,3 +333,11 @@ repositories under test, since the whole point is proving a credential submitted
 a real session actually lands correctly encrypted in the real table, not just that a
 class agrees with itself. Requires `TEST_DATABASE_URL` and `GATEWAY_ENCRYPTION_KEY`; see
 `test/e2e/roleBasedCredentials.e2e.test.ts`.
+
+## CI
+
+`.github/workflows/ci.yml` runs `typecheck` + all three test suites on every push/PR,
+against a Postgres service container that exists only for that one job run — not the
+same database as local development (see "Setup" above) or the real Neon-hosted
+deployment; CI needs zero persistent state, so every run starts from an identical, empty
+database and throws it away afterward.

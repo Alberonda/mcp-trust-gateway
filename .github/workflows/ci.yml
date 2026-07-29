@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A Postgres instance that lives only for this one job run — created fresh, torn down
+    # automatically when the job ends. This is deliberately NOT the same Postgres used for
+    # local development (see README.md's "Setup") or the real Neon-hosted deployment: CI
+    # needs zero persistent state, so every run starts from an identical, empty database.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway_ci_password
+          POSTGRES_DB: mcp_trust_gateway
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://gateway:gateway_ci_password@localhost:5432/mcp_trust_gateway
+      TEST_DATABASE_URL: postgres://gateway:gateway_ci_password@localhost:5432/mcp_trust_gateway_test
+      # A fixed, CI-only key — it never protects anything real (every row it "encrypts"
+      # lives in a database that's destroyed at the end of this job), so there's no harm
+      # in it being visible in this file. Never use this value anywhere real.
+      GATEWAY_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Create the dedicated integration-test database
+        run: PGPASSWORD=gateway_ci_password psql -h localhost -U gateway -d postgres -c "CREATE DATABASE mcp_trust_gateway_test;"
+
+      - name: Apply migrations to both databases
+        run: |
+          npm run migrate
+          DATABASE_URL="$TEST_DATABASE_URL" npx tsx scripts/migrate.ts
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run test:integration
+
+      - run: npm run test:e2e

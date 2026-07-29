@@ -1012,10 +1012,20 @@ Not exhaustive either; real use will surface more. Grouped by what kind of gap e
       still reduce the blast radius of a leak that's caught before misuse.
 
 **Production readiness**
-- [ ] **No CI.** Tests only run when triggered manually — nothing validates a change
-      automatically before it lands.
-- [ ] **No automated tests for either composition root** (`index.ts`, `httpGateway/
-      httpServer.ts`) — both covered by real but manual smoke tests only (see "Testing").
+- [x] ~~No CI~~ — done: `.github/workflows/ci.yml`, a Postgres *service container* (created
+      fresh per job run, never the same database as local dev or Neon) running
+      typecheck + all three test suites on every push/PR. Verified locally first by
+      simulating the exact same sequence against a genuinely fresh, empty Postgres
+      container before trusting it in CI — caught a real, separate bug this way:
+      `npm run migrate` used `node --loader tsx`, a flag deprecated since Node 18.19/20.6
+      that now hard-fails on modern Node (would have broken CI's first real run). Fixed
+      to `tsx scripts/migrate.ts`, matching how every other script in this project
+      already invokes it.
+- [x] ~~No automated tests for either composition root~~ — partially done: every
+      `test/e2e/*.test.ts` spawns the real built `dist/index.js` (the stdio composition
+      root) and drives it over the real MCP protocol, run automatically in CI. HTTP
+      mode's `httpServer.ts` still has no automated equivalent — only the manual
+      `scripts/manual_test_http.ts` smoke test (see "Testing").
 - [x] ~~No `/health` endpoint on HTTP mode~~ — done: `GET /health` in `httpGateway/
       httpServer.ts`, unauthenticated, checks real Postgres connectivity.
 - [x] ~~No admin tooling for users/permissions~~ — done, see "Role-based access control +
