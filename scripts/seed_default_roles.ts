@@ -10,10 +10,19 @@ import { registerServer } from "./lib/registerServer.js";
  *
  * - "admin" role (is_admin = true) — created empty; use scripts/bootstrap_admin.ts to
  *   grant it to someone, and manage_roles for everything after that.
- * - "developer" role — granted blanket (every-tool) access to three real servers:
- *   jira, sonarqube, jenkins. Each is registered with no env of its own (see
- *   db/types.ts's UpstreamServer doc) — every developer registers their own credential
- *   via register_my_credential once an admin assigns them the role.
+ * - "developer" role — granted blanket (every-tool) access to jira/sonarqube/jenkins.
+ *
+ * ⚠️ **Only run this against a database whose gateway process actually has network
+ * access to jira/sonarqube/jenkins.** For this project's real setup, that means the
+ * LOCAL/stdio-mode database — jira's wrapper reads macOS Keychain (only exists on that
+ * Mac), and both sonarqube and jenkins here point at `*.internal.example.com`, an internal
+ * corporate domain confirmed (via public DNS — `dns.google/resolve`, `Status: 3`
+ * NXDOMAIN) to be unreachable from anywhere outside that network. Running this against a
+ * publicly-hosted database (e.g. Neon, used by the Render deployment) registers servers
+ * that will spawn (no crash) but can never complete a real call — misleadingly looking
+ * configured while being functionally dead. Found and corrected for real: this script
+ * was run against Neon once, and all three had to be removed afterward for exactly this
+ * reason. See DESIGN.md's "Role-based access control" section's postscript.
  *
  * Usage:
  *   DATABASE_URL=... npx tsx scripts/seed_default_roles.ts
