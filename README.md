@@ -101,10 +101,23 @@ Environment variables (all optional except the two shared with stdio mode):
 | `HTTP_TLS_CERT_PATH` / `HTTP_TLS_KEY_PATH` | — | Set both to serve HTTPS directly; otherwise runs plain HTTP (fine behind a reverse proxy that terminates TLS, not otherwise) |
 | `HTTP_RATE_LIMIT_MAX_TOKENS` | `60` | Token-bucket capacity per identity |
 | `HTTP_RATE_LIMIT_REFILL_PER_SECOND` | `1` | Token-bucket refill rate per identity |
+| `HTTP_SESSION_TTL_MINUTES` | `60` | How long a session token issued via `POST /login` stays valid |
 
-Point any MCP client at `http(s)://host:port/mcp` with an `Authorization: Bearer <api-key>`
-header — see `scripts/manual_test_http.ts` for a working example, including confirming an
-unauthenticated request is rejected with 401.
+### Authenticating in HTTP mode: log in first, then connect
+
+`/mcp` does **not** accept your long-lived API key directly — exchange it for a
+short-lived session token first:
+
+```bash
+curl -X POST https://host:port/login -H "Authorization: Bearer mtg_..."
+# {"token": "mtgs_...", "expiresAt": "2026-07-29T15:00:00.000Z"}
+```
+
+Then point your MCP client at `/mcp` with that session token instead:
+`Authorization: Bearer mtgs_...`. When you're done, `POST /logout` with the session token
+invalidates it immediately. Session tokens default to a 1-hour lifetime
+(`HTTP_SESSION_TTL_MINUTES`) — see `scripts/manual_test_http.ts` for a full worked
+example, including confirming the raw API key is rejected if used directly against `/mcp`.
 
 ## How an agent connects in stdio mode
 

@@ -437,9 +437,36 @@ rows configured separately.
   share that user's grants").
 - 70 tests total (49 unit + 21 integration) after this sub-phase, all green.
 
-- [ ] **3b** — session tokens: replace static API keys with short-lived tokens issued via
-      a login step (HTTP mode), reducing how often the long-lived credential itself is
-      transmitted.
+**3b — session tokens: done, 2026-07-29.** HTTP mode's `/mcp` no longer accepts a raw API
+key directly — it authenticates via a short-lived session token instead, obtained by
+first exchanging the long-lived API key at `POST /login`. Reduces how often the
+long-lived credential itself is transmitted over the wire, without changing anything
+about stdio mode (a single-shot local process gets no real benefit from a login
+round-trip, so it keeps using its API key directly, as before).
+- `migrations/003_sessions.sql`: new `sessions` table — stores **both** `user_id`
+  (permission checks) and `identity_id` (audit attribution), so logging in doesn't lose
+  the "which specific credential did this" granularity Phase 3a deliberately preserved.
+- `security/sessionTokens.ts`: mirrors `apiKeys.ts`'s approach exactly (same threat
+  model — a server-generated high-entropy secret, not a user-chosen password, so a fast
+  SHA-256 hash is appropriate) but with its own prefix (`mtgs_` vs `mtg_`) so the two are
+  visually distinguishable, e.g. in logs.
+- `db/SessionRepository.ts` (new): `create`/`findByToken` (expiry checked in the query
+  itself, never a separate step a caller could forget)/`revoke`.
+- `db/IdentityRepository.ts` gained `findById` — sessions store an `identityId`, not a
+  full `Identity`, so this is how a resolved session turns back into the `Identity` object
+  `ToolCallHandler`/`ToolDiscoveryRouter` already know how to use, unchanged.
+- `httpGateway/auth.ts`: new `resolveIdentityFromSessionToken`, symmetric with the
+  existing `resolveIdentityFromAuthHeader` (now used only by `/login`) — same
+  never-throws, caller-safe-error contract.
+- `httpServer.ts`: `POST /login` (API key → session token) and `POST /logout` (revokes
+  it); all three `/mcp` routes switched from API-key to session-token resolution.
+- **Verified against a real, running server, not just unit tests**: the full round trip
+  — login with a real API key, connect to `/mcp` with the returned session token, call a
+  real tool, then confirm the *raw API key no longer works directly against `/mcp`*
+  (401 — must log in first), and that logging out immediately invalidates the session
+  token (401 on reuse). `scripts/manual_test_http.ts` covers all of this.
+- 84 tests total (58 unit + 26 integration) after this sub-phase, all green.
+
 - [ ] **3c** — rotation of stored upstream credentials (re-encrypt in place without
       changing the server's id, so existing permission grants don't need to move).
 - [ ] **3d** — a way to actually read the audit log comfortably (CLI query tool at
