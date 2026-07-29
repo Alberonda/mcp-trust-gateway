@@ -588,6 +588,51 @@ migrating that specific integration behind the gateway.
   same change, since it means risking real, daily-use tools if something doesn't spawn
   correctly through the gateway (Docker-based SonarQube in particular).
 
+### Real security gap found and fixed 2026-07-29 — upstream subprocess env leak
+
+Surfaced by a direct, pointed question while migrating the operator's real Jira
+integration behind the gateway: *"if this were a malicious, non-official MCP server, would
+our trust middleware protect us from a credential leak or an attack?"* Honest answer at
+the time: no, not once a call is authorized — the gateway controls *who* can reach *which*
+server, never *what that server's own code does* once it's spawned. That's still true and
+is an inherent limit of any stdio-subprocess-based gateway, not something fixable here.
+
+But checking the actual code to answer that honestly surfaced something concrete and
+worse, not just the inherent limit: `UpstreamConnectionProvider.connect()` spawned every
+upstream server with `env: { ...process.env, ...decryptedEnv }` — handing the subprocess
+the **gateway's own** secrets (`GATEWAY_ENCRYPTION_KEY`, `DATABASE_URL`, and in stdio mode
+`GATEWAY_API_KEY`), not just the one credential that server actually needed. A malicious
+or supply-chain-compromised upstream server — a real risk for community-published npm
+packages, exactly the category being evaluated for the SonarQube migration — could have
+exfiltrated the *master key protecting every other stored credential* just by reading its
+own environment, not merely its own secret.
+
+- **Fixed** by no longer passing `process.env` through at all. Discovered along the way
+  that the MCP SDK itself already ships a security-reviewed safe allowlist for exactly
+  this purpose — `getDefaultEnvironment()` (`@modelcontextprotocol/sdk/client/stdio.js`),
+  used as the SDK's own default whenever a caller passes no explicit `env`. Our code was
+  bypassing that built-in protection by always passing an explicit (and dangerously
+  broad) `env`. Fix: `env: { ...getDefaultEnvironment(), ...decryptedEnv }` — reuses the
+  SDK's own vetted list instead of maintaining a parallel one that could drift.
+- Note the real blast radius was narrower than first assumed: credential-less servers
+  (filesystem, memory) were *never* actually vulnerable, since the old code's ternary
+  only spread `process.env` when a credential was present (`env ? {...process.env, ...} :
+  undefined`) — passing `undefined` already fell through to the SDK's own safe default by
+  accident. The real risk was specific to any server *with* a stored credential/env map —
+  which is precisely the category being extended to real third-party integrations
+  (SonarQube) right when this was found.
+- **Verified with a real spawned subprocess, not a mock** — mocking `StdioClientTransport`
+  would hide exactly the class of bug this is, since the bug was in what gets handed to
+  the real `spawn()` call. `test/fixtures/echoEnvServer.mjs` is a minimal real MCP server
+  that echoes its own `process.env` back as a tool result; the new regression test
+  (`UpstreamConnectionProvider.test.ts`) spawns it through the real provider with fake
+  `GATEWAY_ENCRYPTION_KEY`/`DATABASE_URL` values set, and asserts neither reaches the
+  child. Confirmed the fix matters by reverting it and re-running the same script: the old
+  code leaked both, plus a long list of unrelated host environment variables
+  (`SSH_AUTH_SOCK`, Homebrew paths, etc.) that had nothing to do with any upstream server's
+  actual needs.
+- 94 tests total (59 unit + 35 integration) after this fix, all green.
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no
