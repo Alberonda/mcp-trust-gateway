@@ -71,7 +71,42 @@ npm run test:all         # all three, in order
 See `DESIGN.md`'s "Testing" section for what each layer covers, and what's intentionally
 still left to the manual smoke test.
 
-## How an agent connects to it
+## Two deployment modes
+
+| | Stdio mode (`src/index.ts`) | HTTP mode (`src/httpGateway/httpServer.ts`) |
+|---|---|---|
+| Who it's for | Solo use | A team — centrally-managed permissions/audit |
+| How it runs | Spawned locally by each person's MCP client | One persistent, centrally-hosted process everyone connects to over the network |
+| Identity | One `GATEWAY_API_KEY`, resolved once at boot | `Authorization: Bearer <key>` per request, resolved per session |
+| Who needs Postgres credentials | Every machine running the gateway | Only this one process |
+
+Use stdio mode to try things out. Use HTTP mode for real team use — see DESIGN.md's "Open
+architectural gaps" for why stdio mode alone doesn't scale to a team without giving every
+laptop direct database access.
+
+### Running HTTP mode
+
+```bash
+npm run build
+DATABASE_URL=... GATEWAY_ENCRYPTION_KEY=... HTTP_PORT=3443 npm run start:http
+```
+
+Environment variables (all optional except the two shared with stdio mode):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HTTP_PORT` | `3443` | Port to listen on |
+| `HTTP_HOST` | `127.0.0.1` | Bind address — binding to `0.0.0.0`/`::` without `HTTP_ALLOWED_HOSTS` logs a DNS-rebinding warning |
+| `HTTP_ALLOWED_HOSTS` | — | Comma-separated hostnames for DNS-rebinding protection when not bound to localhost |
+| `HTTP_TLS_CERT_PATH` / `HTTP_TLS_KEY_PATH` | — | Set both to serve HTTPS directly; otherwise runs plain HTTP (fine behind a reverse proxy that terminates TLS, not otherwise) |
+| `HTTP_RATE_LIMIT_MAX_TOKENS` | `60` | Token-bucket capacity per identity |
+| `HTTP_RATE_LIMIT_REFILL_PER_SECOND` | `1` | Token-bucket refill rate per identity |
+
+Point any MCP client at `http(s)://host:port/mcp` with an `Authorization: Bearer <api-key>`
+header — see `scripts/manual_test_http.ts` for a working example, including confirming an
+unauthenticated request is rejected with 401.
+
+## How an agent connects in stdio mode
 
 Point your MCP client's config at this process instead of the real upstream server directly,
 e.g. in Devin CLI / Claude Desktop's MCP config:
