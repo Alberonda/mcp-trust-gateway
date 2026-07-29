@@ -10,6 +10,27 @@ See [`DESIGN.md`](./DESIGN.md) for the full motivation (validated against 2026 r
 including a full competitive-landscape review), architecture, and phased plan — read that
 first in any new session.
 
+## Who can consume this, and how
+
+Any MCP client can talk to this gateway either way below — nothing about the tools/
+permissions/audit logic differs between them, only how a client reaches it:
+
+- **stdio** (`src/index.ts`): the client (Devin CLI, Claude Desktop, ...) spawns
+  `node dist/index.js` itself as a local subprocess and talks to it over stdin/stdout.
+  No network involved in reaching the gateway itself.
+- **HTTP** (`src/httpGateway/httpServer.ts`, `streamable-http` transport): any client —
+  including a custom chatbot/agent that only knows how to call HTTP endpoints — can
+  connect to a persistent, centrally-hosted instance (see the Render deployment) over the
+  network, the same way you'd point a client at any other remote MCP server.
+
+This mirrors how real, widely-used MCP servers are actually built — not something
+specific to this project. `sooperset/mcp-atlassian` (the real Jira/Confluence MCP; see
+`jira` in this repo's own examples) supports stdio *and* SSE/streamable-http from the
+same tool implementations, with a `UserTokenMiddleware` resolving per-request auth in
+HTTP mode — the same shape as this project's `httpGateway/auth.ts` and session tokens.
+Nothing about the MCP protocol requires a server to run locally; that's a deployment
+choice each MCP server's maintainers make, same as this one.
+
 ## Status
 
 Phases 1 through 3.5, plus role-based access control and self-service credentials, are
@@ -49,35 +70,44 @@ See `DESIGN.md`'s status log and phase sections for the full detail.
 
 ## Setup
 
+**There is exactly one real database, for every real user, regardless of which mode
+they connect through** — a managed Postgres (this project uses Neon). Local Docker
+Postgres is *only* ever used as disposable scratch space for running the test suite (see
+"Tests" below and `.github/workflows/ci.yml`) — never for real permissions, credentials,
+roles, or audit history. Pointing a real `DATABASE_URL` at a laptop-only database that
+nobody backs up is how you end up unable to answer "where did my users' data go" the day
+that laptop dies; don't do it, not even "just for now."
+
 ```bash
-# 1. Postgres (Docker) — two databases: one for the running gateway, one dedicated to
-#    integration tests (never point both env vars at the same database — see
-#    test/integration/setupDatabase.ts for why).
-docker run -d --name mcp-trust-gateway-postgres \
-  -e POSTGRES_USER=gateway \
-  -e POSTGRES_PASSWORD=gateway_dev_password \
-  -e POSTGRES_DB=mcp_trust_gateway \
-  -p 5433:5432 \
-  postgres:17-alpine
-docker exec mcp-trust-gateway-postgres psql -U gateway -d postgres -c "CREATE DATABASE mcp_trust_gateway_test;"
-
-# 2. Config
+# 1. Config — DATABASE_URL/GATEWAY_ENCRYPTION_KEY point at your real, managed Postgres
+#    (Neon or similar). TEST_DATABASE_URL is a completely separate, disposable database
+#    (a local Docker container is fine for this one specifically — see "Tests").
 npm install
-cp .env.example .env   # fill in DATABASE_URL and TEST_DATABASE_URL (matching the docker run
-                        # above) and generate GATEWAY_ENCRYPTION_KEY with:
-                        # node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+cp .env.example .env
+# generate GATEWAY_ENCRYPTION_KEY with:
+# node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
-# 3. Schema — apply to BOTH databases. Safe to re-run any time (e.g. after pulling a new
-#    migration file) — scripts/migrate.ts tracks what's already applied and only runs what's new.
-npm run migrate                                            # DATABASE_URL
-DATABASE_URL=$TEST_DATABASE_URL npx tsx scripts/migrate.ts  # TEST_DATABASE_URL
+# 2. Schema — safe to re-run any time (e.g. after pulling a new migration file) —
+#    scripts/migrate.ts tracks what's already applied and only runs what's new.
+npm run migrate
 
-# 4. Seed a test identity + the filesystem server (no credentials needed) for a first try
+# 3. Seed a test identity + the filesystem server (no credentials needed) for a first try
 npx tsx scripts/seed_test_setup.ts   # prints a GATEWAY_API_KEY to use below
 
-# 5. Build and smoke-test
+# 4. Build and smoke-test
 npm run build
-TEST_GATEWAY_API_KEY=<from step 4> npx tsx scripts/manual_test_client.ts
+TEST_GATEWAY_API_KEY=<from step 3> npx tsx scripts/manual_test_client.ts
+```
+
+For running the test suite locally (not against your real database — see "Tests"),
+stand up a disposable Postgres just for that:
+
+```bash
+docker run -d --name mcp-gateway-test-db \
+  -e POSTGRES_USER=gateway -e POSTGRES_PASSWORD=gateway_test_password \
+  -e POSTGRES_DB=mcp_trust_gateway_test -p 5433:5432 postgres:17-alpine
+# TEST_DATABASE_URL=postgres://gateway:gateway_test_password@localhost:5433/mcp_trust_gateway_test
+DATABASE_URL=$TEST_DATABASE_URL npx tsx scripts/migrate.ts
 ```
 
 ## Tests

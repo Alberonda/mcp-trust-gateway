@@ -967,6 +967,73 @@ corporate network) is the only way to reach jira/sonarqube/jenkins at all. Corre
 `scripts/seed_default_roles.ts`'s docstring with an explicit warning about this so it
 isn't run against a publicly-hosted database again without noticing.
 
+**Postscript #2, same investigation — a real distinction worth keeping precise**: not
+every "internal-looking" tool is actually network-unreachable from the cloud. Researched
+how a real production MCP (`sooperset/mcp-atlassian`) is actually built, to check this
+project's own assumptions. Two findings:
+
+1. MCP servers are not inherently local — `mcp-atlassian` itself supports `stdio` *and*
+   `SSE`/`streamable-http` from the same tool implementations, with a
+   `UserTokenMiddleware` resolving per-request auth in HTTP mode (the same shape as this
+   project's `httpGateway/auth.ts`). Whether an MCP server runs locally or centrally is a
+   deployment choice its maintainers make, not a protocol requirement — validates this
+   project's own stdio/HTTP split as the normal pattern, not something invented here.
+2. **Jira specifically was removed from Neon too hastily.** The actual reason it failed
+   wasn't that Jira Cloud is unreachable — `mercedes-benz.atlassian.net` resolves
+   publicly and is a genuine SaaS product, reachable from anywhere (unlike
+   `*.corpintra.net`). It failed because the *wrapper script* this project uses locally
+   reads macOS Keychain, which obviously doesn't exist on Render. Running
+   `mcp-atlassian` directly (env vars `JIRA_URL`/`JIRA_USERNAME`/`JIRA_TOKEN` as an
+   encrypted `user_credentials` row, no wrapper) should actually work from Render — this
+   is worth retrying, unlike sonarqube/jenkins which have a genuine, unfixable network
+   wall. Not yet done.
+
+### Real production data consolidated onto Neon, local Docker Postgres removed entirely — done, 2026-07-29
+
+Prompted by a direct, correct concern: "if my laptop dies, where did my users' data go?"
+Local Docker Postgres had been quietly holding this operator's real roles/permissions/
+credentials/audit history the entire time stdio mode was used daily — not backed up
+anywhere, not the same data Neon held. Two genuinely separate, unsynced databases,
+neither one a complete picture.
+
+**The fix wasn't "stop running locally"** — stdio mode still runs on this machine (it
+has to, for jira/sonarqube/jenkins's sake). The fix was pointing stdio mode's own
+`DATABASE_URL` at Neon instead of local Postgres — "where does the process run" and
+"which database does it read from" are independent choices (see the exchange in this
+session about that). The real subprocess spawns (jira/sonarqube/personal-sandbox) still
+happen locally, so they still reach `*.corpintra.net`/the local filesystem fine; only the
+permission-check/credential-decrypt/audit-write round trip now goes to Neon.
+
+- Decrypted the one real stored credential (sonarqube) with the *local* encryption key,
+  re-encrypted it with Neon's (the two were different values — checked first, would
+  have silently produced garbage otherwise) before inserting it into Neon.
+- Copied the existing identity's `api_key_hash` verbatim into a new Neon `identities`
+  row — the actual plaintext `GATEWAY_API_KEY` already configured in
+  `~/.config/devin/config.json` keeps working unchanged; nothing to rotate or redistribute.
+- Registered jira/sonarqube/jenkins/personal-sandbox in Neon and granted them to a real
+  `developer` role — this is safe now in a way it wasn't for the Render deployment,
+  because stdio mode (which reads this same Neon data) executes locally, unlike Render.
+- Verified for real: reconnected via the exact same `~/.config/devin/config.json` entry
+  now pointing at Neon, confirmed `sonarqube`/`jira`/`personal-sandbox` all connect and
+  work, and confirmed the still-uncredentialed `jenkins` fails gracefully (thanks to the
+  per-server isolation fix above) instead of breaking the whole session — a real
+  production case of that fix mattering, not just a test scenario.
+- `docker rm`'d the local Postgres container after the migration was verified working —
+  no real data was still uniquely held there. Local Docker Postgres from this point on is
+  *only* ever disposable scratch space for the test suite (see `.github/workflows/ci.yml`
+  and README.md's updated "Setup"/"Tests" sections) — never a place real permissions,
+  credentials, roles, or audit history live.
+- **Found, not yet resolved**: this operator now has two separate Neon `users` rows for
+  the same real person — `alberto-devin-cli` (stdio) and `alberto-render-deployment`
+  (from earlier HTTP-mode testing). This is exactly the scenario `identities` vs `users`
+  was designed for (one person, several credentials, shared roles automatically) — these
+  should probably become two `identities` under one `user` instead of two separate
+  `users`. Not yet consolidated.
+- **Found, not yet resolved**: `list_services` reports `needs_credential` for any server
+  with no `user_credentials` row, even ones that genuinely need none at all (jira's
+  Keychain-reading wrapper, personal-sandbox) — cosmetically misleading, not a functional
+  bug (they connect and work fine regardless of that label).
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no
