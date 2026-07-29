@@ -30,9 +30,10 @@ servers — not just intended behavior. 90 automated tests (58 unit + 32 integra
   login → connect → call → logout round trip against a real running server, including
   confirming the raw API key stops working directly against `/mcp` once you've logged in
   (`scripts/manual_test_http.ts`).
-- **Operator tooling**: `scripts/rotate_upstream_credential.ts` (re-encrypt a stored
-  secret in place) and `scripts/view_audit_log.ts` (a filterable CLI over the audit
-  trail), both exercised against real data, not just their own tests.
+- **Operator tooling**: `scripts/set_user_credential.ts` (set/rotate one user's own
+  credential for a server — see "Operator tools" below) and `scripts/view_audit_log.ts`
+  (a filterable CLI over the audit trail), both exercised against real data, not just
+  their own tests.
 
 See `DESIGN.md`'s status log and phase sections for the full detail.
 
@@ -226,16 +227,11 @@ None of these talk to a running gateway process — all connect to Postgres dire
 they work regardless of which deployment mode you're using.
 
 ```bash
-# Rotate every env var for an upstream server's own DEFAULT credential in place (same
-# server id/name/args, only the env changes) — pass the FULL env map, not just the one
-# value that changed
-DATABASE_URL=... GATEWAY_ENCRYPTION_KEY=... \
-  npx tsx scripts/rotate_upstream_credential.ts <server-name> '{"KEY":"new-value"}'
-
-# Give ONE user their own credential for an already-registered server, instead of them
-# sharing whoever registered it's default (e.g. everyone should use their own personal
-# access token for github/sonarqube/jira, not the admin's) — see DESIGN.md's "Per-user
-# credential overrides"
+# Set (or rotate) ONE user's own credential for an already-registered server. There is no
+# server-level default to fall back to (see DESIGN.md's "Remove the shared default
+# upstream credential") -- every user, including whoever registered the server, needs
+# their own row here for anything that needs credentials at all. Pass the FULL env map
+# the server needs, not just the one value that changed.
 DATABASE_URL=... GATEWAY_ENCRYPTION_KEY=... \
   npx tsx scripts/set_user_credential.ts <user-name> <server-name> '{"KEY":"this-users-own-value"}'
 
@@ -244,5 +240,7 @@ DATABASE_URL=... npx tsx scripts/view_audit_log.ts \
   [--identity=<name>] [--server=<name>] [--status=allowed_success|allowed_failure|denied] [--limit=<n>]
 ```
 
-Registering a new server (`scripts/lib/registerServer.ts`) uses the same `{command, args,
-env}` shape as any MCP client config — see the worked example above.
+Registering a new server (`scripts/lib/registerServer.ts`) uses the same `{command, args}`
+shape as any MCP client config, minus `env` — a server never carries its own credential
+(see "Remove the shared default upstream credential"); use `set_user_credential.ts`
+above once it's registered, for each user who needs one.
