@@ -680,6 +680,50 @@ the cert fine; the identical `curl` from a generic container failed with the exa
 - `github-mcp-server` intentionally left as-is for now — no blocking issue found for it,
   just not yet done; natural next candidate if this pattern continues.
 
+### Per-user credential overrides — done, 2026-07-29
+
+Prompted by a direct, important question after the Jira/SonarQube migration: *"each real
+user of this will have their own PAT for each MCP — how does that interact with our
+solution? Am I serving MY credentials to other users of the system?"* Honest answer at the
+time: yes, exactly that, as designed up to this point. `upstream_servers` had exactly one
+credential per server, shared by every user with a permission grant on it — whoever
+registered "sonarqube" with their own token was, in effect, lending it to everyone else
+who got access through the gateway. Permissions were already per-user (Phase 3a); the
+actual credential used to talk to the real backend was not — two genuinely different
+concerns that hadn't been connected.
+
+- `migrations/005_user_credentials.sql`: new `user_credentials` table — `(user_id,
+  server_id) -> encrypted env`, `UNIQUE (user_id, server_id)`. A deliberately separate
+  table rather than a new column on `upstream_servers`: a server has at most one
+  *default* credential, but any number of users can each have their own override, a
+  genuinely different cardinality.
+- `db/UserCredentialRepository.ts`: `findOverride`/`upsert`/`remove`, same shape as every
+  other repository here — takes/returns already-encrypted payloads, never handles
+  plaintext.
+- `gateway/PerUserCredentialResolver.ts` (new, small, single-purpose): given a server and
+  a user id, returns that user's own override if one exists, otherwise the server's own
+  default unchanged. Deliberately kept `UpstreamConnectionProvider` completely unaware
+  this concept exists — it still just connects to whatever `UpstreamServer` object it's
+  handed; the resolution happens once, in the composition root, before connecting.
+- Both composition roots (`index.ts`, `httpGateway/httpServer.ts`) now resolve each
+  accessible server through this before calling `connectionProvider.connect()` — same one
+  line at both call sites, no duplicated logic.
+- `scripts/set_user_credential.ts` (new operator tool): sets one user's own credential for
+  an already-registered server without touching that server's default or anyone else's
+  override.
+- Answered the "shared resource" question explicitly rather than leaving it implicit: the
+  server's own default credential is kept as a fallback, not removed — still correct for
+  genuinely shared resources (e.g. a sandbox everyone is meant to use together), while
+  allowing per-user overrides to be added incrementally, server by server, user by user,
+  without a breaking migration.
+- **Verified with two real distinct users against the real gateway process, not just the
+  repository layer**: registered one shared server with an admin default value, gave one
+  user (Alice) her own override, left the other (Bob) with none, then connected as each
+  through the real stdio gateway and called the same tool. Alice got back her own value;
+  Bob got back the admin's default — confirming one user's override never leaks to
+  another, and the fallback genuinely works, not just in isolation.
+- 104 tests total (64 unit + 40 integration) after this feature, all green.
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no
