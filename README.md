@@ -41,6 +41,15 @@ npm run build
 TEST_GATEWAY_API_KEY=<from step 4> npx tsx scripts/manual_test_client.ts
 ```
 
+## Tests
+
+```bash
+npm test
+```
+
+Runs the unit test suite (`node:test`, no extra framework). See `DESIGN.md`'s "Testing"
+section for what's covered and what's intentionally left to the manual smoke test for now.
+
 ## How an agent connects to it
 
 Point your MCP client's config at this process instead of the real upstream server directly,

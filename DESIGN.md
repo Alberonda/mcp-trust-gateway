@@ -87,6 +87,60 @@ real tools from day one.
 | Audit/credential storage | **PostgreSQL** (not SQLite) | Chosen explicitly by user — treat as a real service from day 1, not a personal single-file prototype. |
 | Encryption | AES-256 at the application layer for the credential vault (real upstream API keys), TLS everywhere in transit | Standard, well-understood approach; avoids relying on Postgres-specific extensions (pgcrypto) so the encryption logic is portable if the DB changes later. |
 
+## Architecture (post-refactor, 2026-07-29)
+
+The first working version had all the right behavior but the wrong shape for a project
+meant to grow: a single `main()` did config loading, DB queries, credential decryption,
+subprocess spawning, *and* the permission/audit business logic inline inside the MCP
+request handlers. That made the actual policy (the reason this project exists) untestable
+without a real Postgres and a real spawned subprocess. Refactored into:
+
+```
+src/
+  constants.ts         — every named value that would otherwise be a magic number/string
+  config.ts             — the only module allowed to read process.env; fails fast at startup
+  security/
+    vault.ts             — AES-256-GCM for the credential vault (key injected, not read from env)
+    apiKeys.ts           — API key generation/hashing (separate concern from vault encryption)
+  db/
+    types.ts             — plain domain types (Identity, UpstreamServer), no SQL shapes leak out
+    pool.ts               — pg.Pool factory; nothing else creates its own connection
+    IdentityRepository.ts | UpstreamServerRepository.ts | PermissionRepository.ts | AuditLogRepository.ts
+                          — one repository per concern, each behind an interface
+  gateway/
+    UpstreamToolClient.ts — the minimal slice of the MCP SDK's Client that the handler needs
+    summarizeResult.ts    — pure function, own unit tests
+    ToolCallHandler.ts    — THE core policy (permission check → forward or deny → audit).
+                            Depends only on the interfaces above, constructor-injected.
+                            This is what makes it unit-testable with in-memory fakes.
+  redact.ts             — unchanged, was already single-purpose
+  index.ts              — composition root only: builds real Postgres-backed repositories
+                          and a real MCP Client/Server, wires them into ToolCallHandler,
+                          connects the transport. No business logic lives here.
+```
+
+Every repository is an interface + a `Postgres*` implementation — swapping storage later,
+or using a fake in a test, means writing a new implementation of the same interface, not
+touching `ToolCallHandler`.
+
+## Testing
+
+`npm test` runs `node:test` (Node's built-in runner, via `tsx` — no new test-framework
+dependency) against every `src/**/*.test.ts`. Test files sit next to the code they cover,
+excluded from the production build (`tsconfig.json`'s `exclude`).
+
+- `security/apiKeys.test.ts`, `security/vault.test.ts`, `redact.test.ts`,
+  `gateway/summarizeResult.test.ts` — pure-function/pure-class unit tests, no fakes needed.
+- `gateway/ToolCallHandler.test.ts` — the most valuable suite: in-memory fakes for
+  `PermissionRepository`, `AuditLogRepository`, and `UpstreamToolClient` prove the actual
+  policy (allow/deny/error paths, redaction, audit status, that a denied call never reaches
+  upstream) without a database or a subprocess. This is the direct payoff of the
+  dependency-inversion refactor above.
+- Not yet covered: the Postgres repository implementations themselves (`Postgres*Repository`
+  classes) and `index.ts`'s wiring — these need a real database, so they're integration-level
+  tests rather than unit tests. Worth adding if/when this project gets a CI pipeline; today
+  they're still covered by the manual smoke test (`scripts/manual_test_client.ts`).
+
 ## Phased plan
 
 ### Phase 1 (MVP) — functionally complete, verified 2026-07-29
@@ -101,8 +155,10 @@ real tools from day one.
       denies a previously-working call.
 - [x] Every call (allowed or rejected) writes a structured audit log row, with credential/
       secret values redacted before storage.
-- [ ] Real automated test suite (currently just a manual smoke-test script,
-      `scripts/manual_test_client.ts`) — worth adding before Phase 2 grows the surface area.
+- [x] Real automated test suite (`npm test`, `node:test`) — see "Testing" above. 22 unit
+      tests covering crypto, redaction, and the full ToolCallHandler policy with fakes.
+      Postgres-backed repository classes and `index.ts` itself are still only covered by
+      the manual smoke test, not automated — acceptable for now, revisit with CI.
 
 ### Phase 2
 - [ ] Replace static API keys with short-lived session tokens (issued after some login step)

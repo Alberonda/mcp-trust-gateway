@@ -1,3 +1,5 @@
+import { REDACTED_PLACEHOLDER } from "./constants.js";
+
 const SECRET_KEY_PATTERN = /token|key|secret|password|credential|authorization/i;
 
 /**
@@ -17,7 +19,7 @@ export function redact(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, v]) => [
         key,
-        SECRET_KEY_PATTERN.test(key) ? "[REDACTED]" : redact(v),
+        SECRET_KEY_PATTERN.test(key) ? REDACTED_PLACEHOLDER : redact(v),
       ]),
     );
   }
