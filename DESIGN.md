@@ -50,6 +50,60 @@ trust/observability layer for agent tool calls" — this project generalizes tha
 - **MCP discovery/curation**: CuratedMCP already working on "which of the 10,000 servers are
   actually good" — not our problem to solve.
 
+## Competitive landscape & differentiation (added 2026-07-29, later same day)
+
+After Phase 1 shipped, a direct question ("if this doesn't exist, is it because nobody
+needed it?") led to actually checking — properly, this time — whether "MCP gateway with
+auth/permissions/audit" already exists as a product category. It does, extensively:
+
+**Direct competitors found**: Permit.io's Permit MCP Gateway (commercial, RBAC/ABAC/ReBAC,
+SOC 2), Microsoft's official `mcp-gateway` (Kubernetes-native, Entra ID), Portkey MCP
+Gateway (org→team→user→server→tool permission hierarchy, IdP integration, commercial),
+MCPX/Lunar.dev (SOC 2, immutable audit, vault-backed secrets), reaatech/mcp-gateway (open
+source, OAuth/OIDC, tamper-evident audit chain, Redis-backed), IBM ContextForge (MIT,
+40+ plugins, 100+ contributors), Docker MCP Gateway, Bifrost (Go, 11µs overhead, 5k RPS),
+MCPJungle, Mcpgate-de/mcpgate (GDPR/PII focus). This is a mature, well-resourced, actively
+competed category as of mid-2026, not an unclaimed gap — several of these shipped within
+the same few months this project's core idea was conceived.
+
+**Conclusion on positioning**: this project is not going to out-build Microsoft, IBM, or a
+SOC 2-certified funded startup on "generic enterprise MCP governance." Continuing to treat
+it as an unclaimed market opportunity would be dishonest. It remains valuable as (a) a real
+engineering exercise (SOLID architecture, real tests, real Postgres — all still true and
+still worth having built), and (b) a narrower, still-real niche identified from the
+competitors' own documented weaknesses, not from guessing:
+
+| Competitor | Its own documented weakness |
+|---|---|
+| MCPX | Intent-based access control and the org-wide catalog are Enterprise-tier only (paid) |
+| Docker MCP Gateway | *"Access control and audit trails are largely build-it-yourself"* |
+| Microsoft/Azure APIM | Governance depth requires buying into Azure APIM — not usable standalone |
+| MCPJungle | *"No built-in RBAC or compliance tooling"* — explicitly aimed at small/dev setups without one |
+
+Pattern: real RBAC + audit is either paywalled (MCPX, Portkey) or requires adopting a large
+platform (Azure, IBM). The self-hosted, no-lock-in options (Docker, MCPJungle) explicitly
+punt on governance. **Nobody in this list combines "genuinely simple to self-host, fully
+open, no platform lock-in" with "real RBAC + encrypted credential vault + audit built in
+from the start."** That combination is this project's niche now — narrow, not a business,
+but real and defensible as an open-source project.
+
+**A second, largely separate axis found during the same research, worth combining**: the
+single most-cited *practical* pain point driving people away from naive MCP usage right now
+isn't identity — it's context-window cost. One documented case (MikkoParkkola/mcp-gateway):
+connecting 20 MCP servers with 100+ tools costs ~15,000 tokens of tool-schema overhead
+before a conversation even starts — the same root cause behind Perplexity dropping MCP
+internally (see "Validated gap" above). Almost none of the identity-focused gateways above
+address this; only Bifrost touches it in passing ("Code Mode token reduction"). Combining
+our RBAC/audit niche with on-demand tool discovery (expose a handful of small "meta-tools" —
+e.g. `find_tool`, `call_tool` — instead of forwarding every real tool's full schema
+upfront) is a genuinely less-crowded combination than pure identity/governance alone.
+
+**Consequence for the plan**: on-demand tool discovery (which also requires lifting Phase
+1's "one upstream server per gateway process" constraint — discovery across a single server
+isn't very interesting) is reordered ahead of the original Phase 2 items (session tokens,
+credential rotation). It's the actual differentiator; session-token maturity is closer to
+hygiene/parity with what competitors already have. See the renumbered phased plan below.
+
 ## What this project actually is
 
 **An MCP proxy that sits between any MCP client (Devin CLI, Claude Desktop, Cursor...) and
@@ -178,7 +232,22 @@ excluded from the production build (`tsconfig.json`'s `exclude`).
       tests (`npm run test:integration`) covering every Postgres repository against a real
       database. `index.ts` itself is still only covered by the manual smoke test.
 
-### Phase 2
+### Phase 2 (reprioritized 2026-07-29 — this is the actual differentiator, see
+### "Competitive landscape & differentiation" above)
+- [ ] Lift the "one upstream server per gateway process" constraint — one gateway process/
+      identity should be able to reach several registered `upstream_servers` rows.
+- [ ] On-demand tool discovery: instead of `tools/list` forwarding every real tool's full
+      schema, expose a small, fixed set of meta-tools (e.g. `find_tool(query)`,
+      `call_tool(name, args)`) so the agent's context cost stays constant regardless of how
+      many real tools/servers are registered. `find_tool` searches across every server the
+      calling identity has permission for; `call_tool` reuses the existing `ToolCallHandler`
+      policy unchanged (permission check → forward → audit still applies per underlying
+      call).
+- [ ] Re-verify the manual smoke test and the ToolCallHandler test suite still pass with
+      multiple registered servers, including that `find_tool` never surfaces a tool the
+      calling identity isn't permitted to call.
+
+### Phase 3 (was Phase 2 — parity/hygiene, still worth doing, just not the differentiator)
 - [ ] Replace static API keys with short-lived session tokens (issued after some login step)
       + rotation of the stored upstream credentials.
 - [ ] Per-user (not just per-API-key) permission granularity, groundwork for real multi-tenant
@@ -186,13 +255,21 @@ excluded from the production build (`tsconfig.json`'s `exclude`).
 - [ ] A way to actually read the audit log comfortably (CLI query tool at minimum; a small
       web view if it's worth it by then).
 
-### Phase 3 (advanced, may not be worth doing — revisit after Phase 1/2 prove useful)
+### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no
       general solution exists yet anywhere.
 
 ## Status log
 
+- **2026-07-29 (end of day)**: Ran a proper competitive-landscape check after a direct
+  challenge ("if this doesn't exist, is it because nobody needed it?"). Found ~10 existing
+  MCP gateways with auth/RBAC/audit, including Microsoft and IBM official projects and
+  multiple SOC 2-certified commercial products. Reframed positioning honestly (see
+  "Competitive landscape & differentiation" above) and reprioritized the plan: on-demand
+  tool discovery (a less-crowded axis found in the same research) is now Phase 2, ahead of
+  the original Phase 2 (session tokens/rotation), which moved to Phase 3. No code changed
+  in this update — planning only.
 - **2026-07-29**: Project scaffolded. Idea validated via research (see sources above).
   Stack and Phase 1 scope decided. Repo created at
   `/Users/AREYESM/PycharmProjects/mcp-trust-gateway`. Code not yet written beyond scaffold.
