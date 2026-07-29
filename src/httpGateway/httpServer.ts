@@ -11,22 +11,24 @@ import type { ServerResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Request, Response } from "express";
 
 import { PostgresAuditLogRepository } from "../db/AuditLogRepository.js";
+import type { AuditLogRepository } from "../db/AuditLogRepository.js";
 import { PostgresIdentityRepository } from "../db/IdentityRepository.js";
 import type { IdentityRepository } from "../db/IdentityRepository.js";
 import { PostgresPermissionRepository } from "../db/PermissionRepository.js";
 import type { PermissionRepository } from "../db/PermissionRepository.js";
 import { createPool } from "../db/pool.js";
 import { SafeAuditLogRepository } from "../db/SafeAuditLogRepository.js";
+import { PostgresSessionRepository } from "../db/SessionRepository.js";
+import type { SessionRepository } from "../db/SessionRepository.js";
 import { PostgresUpstreamServerRepository } from "../db/UpstreamServerRepository.js";
 import type { UpstreamServerRepository } from "../db/UpstreamServerRepository.js";
-import type { AuditLogRepository } from "../db/AuditLogRepository.js";
 import type { Identity } from "../db/types.js";
 import { ToolCallHandler } from "../gateway/ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "../gateway/ToolDiscoveryRouter.js";
 import { PerSessionUpstreamConnectionProvider } from "../gateway/UpstreamConnectionProvider.js";
 import type { ConnectedUpstream, UpstreamConnectionProvider } from "../gateway/UpstreamConnectionProvider.js";
 import { CredentialVault } from "../security/vault.js";
-import { resolveIdentityFromAuthHeader } from "./auth.js";
+import { resolveIdentityFromAuthHeader, resolveIdentityFromSessionToken } from "./auth.js";
 import { HttpStatusError } from "./HttpStatusError.js";
 import type { HttpGatewayConfig } from "./httpConfig.js";
 import { loadHttpConfig } from "./httpConfig.js";
@@ -35,17 +37,23 @@ import type { RateLimiter } from "./RateLimiter.js";
 
 /**
  * Composition root for **HTTP mode**: one persistent, centrally-hosted process that many
- * different identities connect to concurrently over the network, each authenticating with
- * their own API key on every request rather than one identity fixed at process boot (see
- * src/index.ts, stdio mode's composition root, for that simpler single-identity case).
+ * different identities connect to concurrently over the network, instead of one process
+ * per identity spawned locally (see src/index.ts, stdio mode's composition root).
  *
  * This is what resolves the deployment-centralization gap in DESIGN.md's "Open
  * architectural gaps": only *this* process needs direct Postgres credentials — team
  * members' machines only need network access to whatever host runs this, never to the
  * database itself.
+ *
+ * Auth (Phase 3b): POST /login exchanges a long-lived API key for a short-lived session
+ * token (SessionRepository) — every other route (/mcp) authenticates via that session
+ * token instead, so the long-lived credential itself is transmitted as rarely as possible.
  */
 
-interface Session {
+/** One live MCP protocol connection — not to be confused with a login session record
+ *  (db/SessionRepository.ts's Session), which is the short-lived *credential* used to
+ *  authenticate the request that creates one of these. */
+interface McpSession {
   readonly transport: StreamableHTTPServerTransport;
   readonly identityId: string;
   readonly connectedUpstreams: readonly ConnectedUpstream[];
@@ -56,11 +64,13 @@ interface Dependencies {
   readonly permissions: PermissionRepository;
   readonly upstreamServers: UpstreamServerRepository;
   readonly auditLog: AuditLogRepository;
+  readonly sessions: SessionRepository;
   readonly connectionProvider: UpstreamConnectionProvider;
   readonly rateLimiter: RateLimiter;
+  readonly sessionTtlMinutes: number;
 }
 
-async function createSession(identity: Identity, deps: Dependencies): Promise<Session> {
+async function createMcpSession(identity: Identity, deps: Dependencies): Promise<McpSession> {
   const accessibleServerIds = await deps.permissions.findAccessibleServerIds(identity.userId);
   const accessibleServers = await deps.upstreamServers.findManyByIds(accessibleServerIds);
   if (accessibleServers.length === 0) {
@@ -80,38 +90,61 @@ async function createSession(identity: Identity, deps: Dependencies): Promise<Se
     async (request) => (await router.handleMetaToolCall(request.params.name, request.params.arguments)) as ServerResult,
   );
 
-  let session: Session;
+  let mcpSession: McpSession;
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     onsessioninitialized: (sessionId) => {
-      sessions.set(sessionId, session);
+      mcpSessions.set(sessionId, mcpSession);
     },
   });
-  session = { transport, identityId: identity.id, connectedUpstreams };
+  mcpSession = { transport, identityId: identity.id, connectedUpstreams };
 
   transport.onclose = () => {
     const sessionId = transport.sessionId;
-    if (sessionId) sessions.delete(sessionId);
+    if (sessionId) mcpSessions.delete(sessionId);
     Promise.all(connectedUpstreams.map((upstream) => upstream.close())).catch((error: unknown) => {
       console.error("[mcp-trust-gateway:http] Error closing upstream connections for a closed session:", error);
     });
   };
 
   await mcpServer.connect(transport);
-  return session;
+  return mcpSession;
 }
 
-// Module-level session store — one per running process, cleared entry-by-entry as
-// sessions close (see transport.onclose above) and entirely on graceful shutdown.
-const sessions = new Map<string, Session>();
+// Module-level MCP-protocol-session store — one per running process, cleared entry-by-entry
+// as sessions close (see transport.onclose above) and entirely on graceful shutdown. Not to
+// be confused with login sessions (db/SessionRepository.ts), which persist in Postgres.
+const mcpSessions = new Map<string, McpSession>();
 
-function sessionIdFrom(req: Request): string | undefined {
+function mcpSessionIdFrom(req: Request): string | undefined {
   const header = req.headers["mcp-session-id"];
   return typeof header === "string" ? header : undefined;
 }
 
-async function handlePost(req: Request, res: Response, deps: Dependencies): Promise<void> {
+async function handleLogin(req: Request, res: Response, deps: Dependencies): Promise<void> {
   const authResult = await resolveIdentityFromAuthHeader(req.headers.authorization, deps.identities);
+  if ("error" in authResult) {
+    res.status(401).json({ error: authResult.error });
+    return;
+  }
+
+  const { token, expiresAt } = await deps.sessions.create(
+    authResult.identity.userId,
+    authResult.identity.id,
+    deps.sessionTtlMinutes,
+  );
+  res.status(200).json({ token, expiresAt: expiresAt.toISOString() });
+}
+
+async function handleLogout(req: Request, res: Response, deps: Dependencies): Promise<void> {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length).trim() : undefined;
+  if (token) await deps.sessions.revoke(token);
+  res.status(204).end();
+}
+
+async function handleMcpPost(req: Request, res: Response, deps: Dependencies): Promise<void> {
+  const authResult = await resolveIdentityFromSessionToken(req.headers.authorization, deps.sessions, deps.identities);
   if ("error" in authResult) {
     res.status(401).json({ error: authResult.error });
     return;
@@ -123,8 +156,8 @@ async function handlePost(req: Request, res: Response, deps: Dependencies): Prom
     return;
   }
 
-  const sessionId = sessionIdFrom(req);
-  const existing = sessionId ? sessions.get(sessionId) : undefined;
+  const mcpSessionId = mcpSessionIdFrom(req);
+  const existing = mcpSessionId ? mcpSessions.get(mcpSessionId) : undefined;
 
   if (existing && existing.identityId !== identity.id) {
     res.status(403).json({ error: "This session belongs to a different identity." });
@@ -141,25 +174,25 @@ async function handlePost(req: Request, res: Response, deps: Dependencies): Prom
     return;
   }
 
-  const session = await createSession(identity, deps);
-  await session.transport.handleRequest(req, res, req.body);
+  const mcpSession = await createMcpSession(identity, deps);
+  await mcpSession.transport.handleRequest(req, res, req.body);
 }
 
-async function handleGetOrDelete(req: Request, res: Response, deps: Dependencies): Promise<void> {
-  const authResult = await resolveIdentityFromAuthHeader(req.headers.authorization, deps.identities);
+async function handleMcpGetOrDelete(req: Request, res: Response, deps: Dependencies): Promise<void> {
+  const authResult = await resolveIdentityFromSessionToken(req.headers.authorization, deps.sessions, deps.identities);
   if ("error" in authResult) {
     res.status(401).json({ error: authResult.error });
     return;
   }
 
-  const sessionId = sessionIdFrom(req);
-  const session = sessionId ? sessions.get(sessionId) : undefined;
-  if (!session || session.identityId !== authResult.identity.id) {
+  const mcpSessionId = mcpSessionIdFrom(req);
+  const mcpSession = mcpSessionId ? mcpSessions.get(mcpSessionId) : undefined;
+  if (!mcpSession || mcpSession.identityId !== authResult.identity.id) {
     res.status(400).json({ error: "Invalid or missing session for this identity." });
     return;
   }
 
-  await session.transport.handleRequest(req, res);
+  await mcpSession.transport.handleRequest(req, res);
 }
 
 /** Wraps a handler so any thrown/rejected error becomes a clean JSON HTTP response
@@ -188,8 +221,10 @@ function buildDependencies(config: HttpGatewayConfig): Dependencies {
     permissions: new PostgresPermissionRepository(pool),
     upstreamServers: new PostgresUpstreamServerRepository(pool),
     auditLog: new SafeAuditLogRepository(new PostgresAuditLogRepository(pool)),
+    sessions: new PostgresSessionRepository(pool),
     connectionProvider: new PerSessionUpstreamConnectionProvider(new CredentialVault(config.encryptionKey)),
     rateLimiter: new InMemoryTokenBucketRateLimiter(config.rateLimit.maxTokens, config.rateLimit.refillPerSecond / 1000),
+    sessionTtlMinutes: config.sessionTtlMinutes,
   };
 }
 
@@ -198,9 +233,11 @@ async function main(): Promise<void> {
   const deps = buildDependencies(config);
 
   const app = createMcpExpressApp({ host: config.host, allowedHosts: config.allowedHosts as string[] | undefined });
-  app.post("/mcp", safely((req, res) => handlePost(req, res, deps)));
-  app.get("/mcp", safely((req, res) => handleGetOrDelete(req, res, deps)));
-  app.delete("/mcp", safely((req, res) => handleGetOrDelete(req, res, deps)));
+  app.post("/login", safely((req, res) => handleLogin(req, res, deps)));
+  app.post("/logout", safely((req, res) => handleLogout(req, res, deps)));
+  app.post("/mcp", safely((req, res) => handleMcpPost(req, res, deps)));
+  app.get("/mcp", safely((req, res) => handleMcpGetOrDelete(req, res, deps)));
+  app.delete("/mcp", safely((req, res) => handleMcpGetOrDelete(req, res, deps)));
 
   const server = config.tls
     ? https.createServer({ cert: readFileSync(config.tls.certPath), key: readFileSync(config.tls.keyPath) }, app)
@@ -219,9 +256,9 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     console.log("[mcp-trust-gateway:http] Shutting down, closing all active sessions...");
     await Promise.all(
-      [...sessions.values()].map(async (session) => {
-        await session.transport.close();
-        await Promise.all(session.connectedUpstreams.map((upstream) => upstream.close()));
+      [...mcpSessions.values()].map(async (mcpSession) => {
+        await mcpSession.transport.close();
+        await Promise.all(mcpSession.connectedUpstreams.map((upstream) => upstream.close()));
       }),
     );
     server.close(() => process.exit(0));

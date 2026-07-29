@@ -1,3 +1,4 @@
+import { DEFAULT_SESSION_TTL_MINUTES } from "../constants.js";
 import { loadBaseConfig, requireEnv } from "../config.js";
 import type { BaseConfig } from "../config.js";
 
@@ -26,6 +27,8 @@ export interface HttpGatewayConfig extends BaseConfig {
     readonly maxTokens: number;
     readonly refillPerSecond: number;
   };
+  /** How long a session token issued via POST /login stays valid. */
+  readonly sessionTtlMinutes: number;
 }
 
 function parsePositiveInt(name: string, raw: string): number {
@@ -63,5 +66,8 @@ export function loadHttpConfig(): HttpGatewayConfig {
         ? parsePositiveInt("HTTP_RATE_LIMIT_REFILL_PER_SECOND", requireEnv("HTTP_RATE_LIMIT_REFILL_PER_SECOND"))
         : DEFAULT_RATE_LIMIT_REFILL_PER_SECOND,
     },
+    sessionTtlMinutes: optionalEnv("HTTP_SESSION_TTL_MINUTES")
+      ? parsePositiveInt("HTTP_SESSION_TTL_MINUTES", requireEnv("HTTP_SESSION_TTL_MINUTES"))
+      : DEFAULT_SESSION_TTL_MINUTES,
   });
 }

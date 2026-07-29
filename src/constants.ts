@@ -14,6 +14,19 @@ export const API_KEY_RANDOM_BYTES = 24;
  *  config files, etc.) the same way "sk_" or "ghp_" identify other providers' keys. */
 export const API_KEY_PREFIX = "mtg_";
 
+/** Entropy for a generated session token — same size as an API key; both are
+ *  server-generated high-entropy secrets, not user-chosen passwords (see
+ *  security/sessionTokens.ts for why that means the same fast-hash approach applies). */
+export const SESSION_TOKEN_RANDOM_BYTES = 24;
+
+/** Distinct prefix from API_KEY_PREFIX so a session token is visually distinguishable
+ *  from a long-lived API key at a glance (e.g. in logs, if one ever leaked there). */
+export const SESSION_TOKEN_PREFIX = "mtgs_";
+
+/** Default time-to-live for a session token issued via HTTP mode's /login — short enough
+ *  that a leaked session token matters far less than a leaked long-lived API key. */
+export const DEFAULT_SESSION_TTL_MINUTES = 60;
+
 /** Single source of truth for audit_log.status — the Postgres CHECK constraint in
  *  migrations/001_init.sql must be kept in sync with these exact values. */
 export const AuditStatus = {
