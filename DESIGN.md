@@ -354,6 +354,60 @@ Two real gaps surfaced by direct questioning, not found proactively:
    to over the network instead of spawning it locally — closer to how the commercial
    competitors are actually built. Not decided yet; revisit before/during Phase 3.
 
+### Phase 2.5 — centralized HTTP deployment mode (in progress, started 2026-07-29)
+
+Resolves open gap #2 above via option (b): a second deployment mode where the gateway runs
+as one persistent, centrally-hosted service that every team member's MCP client connects to
+over the network (`StreamableHTTPServerTransport`, already in the installed SDK), instead of
+each person spawning their own local stdio process with direct Postgres credentials. The
+stdio mode (`src/index.ts`) isn't being removed — it's still the simplest option for solo
+use — this is an additional entry point for team use.
+
+**Decisions**:
+- **Upstream connections**: one real MCP server subprocess per incoming session initially
+  (mirrors the existing, already-tested stdio-mode wiring), *not* a shared pool across
+  identities yet — introducing both a new transport and a new connection-sharing model in
+  the same change is more risk than necessary. Sits behind a new
+  `UpstreamConnectionProvider` interface specifically so swapping in a pooled
+  implementation later doesn't require touching call sites again.
+- **Identity resolution moves from once-at-boot to once-per-connection**: stdio mode reads
+  one `GATEWAY_API_KEY` env var and resolves one identity for the whole process lifetime;
+  HTTP mode must read a `Authorization: Bearer <key>` header on each incoming session and
+  resolve identity dynamically, since one server process now serves many different
+  identities concurrently.
+- **Scope for this iteration**: explicitly asked for production-oriented, not a bare
+  proof-of-concept — includes robust HTTP error handling (a single bad request must never
+  crash the whole process), basic per-identity rate limiting (viable now that this is a
+  long-lived process with in-memory state, unlike the one-shot stdio mode), and optional
+  built-in TLS (cert/key via env vars) for cases where there's no reverse proxy in front.
+
+**Shipped and verified 2026-07-29**:
+- `src/gateway/UpstreamConnectionProvider.ts`: the credential-decrypt-and-spawn logic
+  factored out of `index.ts` into `PerSessionUpstreamConnectionProvider`, reused by both
+  entry points. `index.ts` (stdio mode) now uses this too — refactor, not new behavior;
+  re-verified the stdio manual demo still passes identically after the change.
+- `src/httpGateway/`: `httpConfig.ts` (port/host/TLS/rate-limit env vars, extends the base
+  `DATABASE_URL`/`GATEWAY_ENCRYPTION_KEY` config shared with stdio mode), `auth.ts`
+  (`Authorization: Bearer <key>` → identity, resolved fresh per request — never throws,
+  every failure mode returns a caller-safe error string), `RateLimiter.ts` (in-memory token
+  bucket per identity, injectable clock, 5 unit tests), `HttpStatusError.ts`, and
+  `httpServer.ts` (the composition root: Express via the SDK's own
+  `createMcpExpressApp` — which includes DNS-rebinding protection — session map keyed by
+  MCP's own session ID, `StreamableHTTPServerTransport` per session, TLS via
+  `HTTP_TLS_CERT_PATH`/`HTTP_TLS_KEY_PATH` or plain HTTP behind a reverse proxy, graceful
+  shutdown closing every active session and its upstream subprocesses on SIGTERM/SIGINT).
+- **Verified for real, not just "compiles"**: started the built server, connected two
+  *different* identities to the *same running process* concurrently
+  (`scripts/manual_test_http.ts` + an ad hoc multi-tenancy script) — `narrow-agent` saw
+  only `sandbox-a`, `broad-agent` saw both, exactly as in the stdio-mode demo, but now both
+  over the network against one shared process. Confirmed in the real `audit_log` table.
+  Also verified: an unauthenticated request is rejected with 401 before touching any MCP
+  protocol machinery, and TLS mode actually serves HTTPS (self-signed cert, real `curl -k`
+  request over TLS) rather than just type-checking.
+- 69 tests total (49 unit + 20 integration) after this phase, all green.
+- Not yet done: automated (not just manual) tests for `httpServer.ts` itself, and the
+  pooled-upstream-connections optimization explicitly deferred in the decisions above.
+
 ### Phase 3 (was Phase 2 — parity/hygiene, still worth doing, just not the differentiator)
 - [ ] Replace static API keys with short-lived session tokens (issued after some login step)
       + rotation of the stored upstream credentials.

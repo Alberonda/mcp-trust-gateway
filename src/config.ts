@@ -13,12 +13,26 @@ export interface GatewayConfig {
   readonly gatewayApiKey: string;
 }
 
-function requireEnv(name: string): string {
+/** What every entry point needs, regardless of transport (stdio vs HTTP) — exported so
+ *  httpConfig.ts can build on it instead of re-reading these two env vars itself. */
+export interface BaseConfig {
+  readonly databaseUrl: string;
+  readonly encryptionKey: Buffer;
+}
+
+export function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
+}
+
+export function loadBaseConfig(): BaseConfig {
+  return Object.freeze({
+    databaseUrl: requireEnv("DATABASE_URL"),
+    encryptionKey: parseEncryptionKey(requireEnv("GATEWAY_ENCRYPTION_KEY")),
+  });
 }
 
 function parseEncryptionKey(hex: string): Buffer {
@@ -43,8 +57,7 @@ function parseEncryptionKey(hex: string): Buffer {
  *  gateway process can reach every server that identity has any grant on, not just one. */
 export function loadConfig(): GatewayConfig {
   return Object.freeze({
-    databaseUrl: requireEnv("DATABASE_URL"),
-    encryptionKey: parseEncryptionKey(requireEnv("GATEWAY_ENCRYPTION_KEY")),
+    ...loadBaseConfig(),
     gatewayApiKey: requireEnv("GATEWAY_API_KEY"),
   });
 }

@@ -1,5 +1,3 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -7,31 +5,30 @@ import type { ServerResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { loadConfig } from "./config.js";
 import { PostgresAuditLogRepository } from "./db/AuditLogRepository.js";
-import type { AuditLogRepository } from "./db/AuditLogRepository.js";
 import { PostgresIdentityRepository } from "./db/IdentityRepository.js";
 import { PostgresPermissionRepository } from "./db/PermissionRepository.js";
-import type { PermissionRepository } from "./db/PermissionRepository.js";
 import { createPool } from "./db/pool.js";
 import { SafeAuditLogRepository } from "./db/SafeAuditLogRepository.js";
 import { PostgresUpstreamServerRepository } from "./db/UpstreamServerRepository.js";
-import type { Identity, UpstreamServer } from "./db/types.js";
 import { ToolCallHandler } from "./gateway/ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "./gateway/ToolDiscoveryRouter.js";
-import type { ToolCallResult } from "./gateway/UpstreamToolClient.js";
+import { PerSessionUpstreamConnectionProvider } from "./gateway/UpstreamConnectionProvider.js";
 import { hashApiKey } from "./security/apiKeys.js";
 import { CredentialVault } from "./security/vault.js";
 
 /**
- * Composition root: wires concrete implementations together and starts the process.
+ * Composition root for **stdio mode**: one process, one identity (from a single
+ * GATEWAY_API_KEY env var, resolved once at startup), spawned locally by an MCP client
+ * (Devin CLI, Claude Desktop). Simplest option for solo use.
+ *
+ * For team use with centrally-managed permissions/audit, see httpServer.ts instead — a
+ * second entry point that runs as one persistent, centrally-hosted service reachable by
+ * many identities over the network, resolving identity per-connection rather than once at
+ * boot. See DESIGN.md's Phase 2.5 for why both modes exist rather than replacing this one.
+ *
  * No business logic lives here — see gateway/ToolCallHandler.ts and
  * gateway/ToolDiscoveryRouter.ts for that. This file's only job is "given real config,
  * build the real objects and connect them."
- *
- * Phase 2 scope (see DESIGN.md): the identity's accessible servers are derived from
- * PermissionRepository.findAccessibleServerIds(), not a single env var — one gateway
- * process connects to every server that identity has any grant on, and exposes exactly
- * two meta-tools (find_tool, call_tool) to the agent regardless of how many real tools sit
- * behind those servers.
  */
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -43,7 +40,7 @@ async function main(): Promise<void> {
   // Wrapped so a transient audit-write failure can never surface as if a real, possibly
   // already-completed tool call had failed (see SafeAuditLogRepository's docstring).
   const auditLog = new SafeAuditLogRepository(new PostgresAuditLogRepository(pool));
-  const vault = new CredentialVault(config.encryptionKey);
+  const connectionProvider = new PerSessionUpstreamConnectionProvider(new CredentialVault(config.encryptionKey));
 
   const identity = await identities.findByApiKeyHash(hashApiKey(config.gatewayApiKey));
   if (!identity) {
@@ -57,7 +54,10 @@ async function main(): Promise<void> {
   }
 
   const handlers = await Promise.all(
-    accessibleServers.map((server) => connectServer(server, vault, identity, permissions, auditLog)),
+    accessibleServers.map(async (server) => {
+      const { client } = await connectionProvider.connect(server);
+      return new ToolCallHandler(identity, server, permissions, auditLog, client);
+    }),
   );
   const router = new ToolDiscoveryRouter(handlers, identity, auditLog);
 
@@ -74,34 +74,6 @@ async function main(): Promise<void> {
   );
 
   await server.connect(new StdioServerTransport());
-}
-
-/** Decrypts the credential (if any), spawns the real MCP server as a subprocess, and
- *  builds the ToolCallHandler that enforces permissions/audit for calls to it. */
-async function connectServer(
-  server: UpstreamServer,
-  vault: CredentialVault,
-  identity: Identity,
-  permissions: PermissionRepository,
-  auditLog: AuditLogRepository,
-): Promise<ToolCallHandler> {
-  const credential = server.credential ? vault.decrypt(server.credential) : undefined;
-
-  const [command, ...args] = server.command.split(" ");
-  const upstreamClient = new Client({ name: "mcp-trust-gateway", version: "0.1.0" });
-  await upstreamClient.connect(
-    new StdioClientTransport({
-      command,
-      args,
-      env: credential ? { ...process.env, UPSTREAM_CREDENTIAL: credential } : undefined,
-    }),
-  );
-
-  return new ToolCallHandler(identity, server, permissions, auditLog, {
-    listTools: () => upstreamClient.listTools(),
-    callTool: (name, callArgs) =>
-      upstreamClient.callTool({ name, arguments: callArgs as Record<string, unknown> }) as Promise<ToolCallResult>,
-  });
 }
 
 main().catch((error) => {
