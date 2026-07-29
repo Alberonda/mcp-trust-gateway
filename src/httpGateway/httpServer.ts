@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import * as http from "node:http";
 import * as https from "node:https";
 
+import type pg from "pg";
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -60,6 +62,7 @@ interface McpSession {
 }
 
 interface Dependencies {
+  readonly pool: pg.Pool;
   readonly identities: IdentityRepository;
   readonly permissions: PermissionRepository;
   readonly upstreamServers: UpstreamServerRepository;
@@ -119,6 +122,21 @@ const mcpSessions = new Map<string, McpSession>();
 function mcpSessionIdFrom(req: Request): string | undefined {
   const header = req.headers["mcp-session-id"];
   return typeof header === "string" ? header : undefined;
+}
+
+/** Deliberately unauthenticated and unfiltered by rate limiting — this is what a load
+ *  balancer/uptime monitor polls to decide whether to route traffic here at all, so it
+ *  can't depend on a session existing yet. Confirms the process can actually reach
+ *  Postgres, not just that the HTTP server itself is accepting connections — a gateway
+ *  that's up but can't reach its database is not meaningfully healthy. */
+async function handleHealth(_req: Request, res: Response, deps: Dependencies): Promise<void> {
+  try {
+    await deps.pool.query("SELECT 1");
+    res.status(200).json({ status: "ok" });
+  } catch (error) {
+    console.error("[mcp-trust-gateway:http] Health check failed to reach Postgres:", error);
+    res.status(503).json({ status: "unhealthy" });
+  }
 }
 
 async function handleLogin(req: Request, res: Response, deps: Dependencies): Promise<void> {
@@ -217,6 +235,7 @@ function safely(handler: (req: Request, res: Response) => Promise<void>) {
 function buildDependencies(config: HttpGatewayConfig): Dependencies {
   const pool = createPool(config.databaseUrl);
   return {
+    pool,
     identities: new PostgresIdentityRepository(pool),
     permissions: new PostgresPermissionRepository(pool),
     upstreamServers: new PostgresUpstreamServerRepository(pool),
@@ -233,6 +252,7 @@ async function main(): Promise<void> {
   const deps = buildDependencies(config);
 
   const app = createMcpExpressApp({ host: config.host, allowedHosts: config.allowedHosts as string[] | undefined });
+  app.get("/health", safely((req, res) => handleHealth(req, res, deps)));
   app.post("/login", safely((req, res) => handleLogin(req, res, deps)));
   app.post("/logout", safely((req, res) => handleLogout(req, res, deps)));
   app.post("/mcp", safely((req, res) => handleMcpPost(req, res, deps)));
