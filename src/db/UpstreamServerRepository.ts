@@ -1,5 +1,5 @@
 import type { Queryable } from "./Queryable.js";
-import type { UpstreamServer } from "./types.js";
+import type { EncryptedUpstreamCredential, UpstreamServer } from "./types.js";
 
 export interface UpstreamServerRepository {
   findByName(name: string): Promise<UpstreamServer | null>;
@@ -7,6 +7,13 @@ export interface UpstreamServerRepository {
    *  on (see PermissionRepository.findAccessibleServerIds) into the details needed to
    *  actually connect to each one. Empty input returns an empty array without a query. */
   findManyByIds(ids: readonly string[]): Promise<UpstreamServer[]>;
+
+  /** Rotates the credential for an existing server in place — same id/name/command, only
+   *  the encrypted secret changes. Keeping the id stable means every existing permission
+   *  grant for this server keeps working without needing to be re-created; only whoever
+   *  connects to the server afterwards gets the new credential. Throws if serverId
+   *  doesn't exist, since a silent no-op there would be a confusing way to fail. */
+  updateCredential(serverId: string, credential: EncryptedUpstreamCredential): Promise<void>;
 }
 
 interface UpstreamServerRow {
@@ -55,5 +62,18 @@ export class PostgresUpstreamServerRepository implements UpstreamServerRepositor
       [ids],
     );
     return rows.map(mapRow);
+  }
+
+  async updateCredential(serverId: string, credential: EncryptedUpstreamCredential): Promise<void> {
+    const { rows } = await this.db.query<{ id: string }>(
+      `UPDATE upstream_servers
+       SET encrypted_credential = $2, credential_iv = $3, credential_auth_tag = $4
+       WHERE id = $1
+       RETURNING id`,
+      [serverId, credential.ciphertext, credential.iv, credential.authTag],
+    );
+    if (rows.length === 0) {
+      throw new Error(`No upstream server with id "${serverId}" — cannot rotate a credential for a server that doesn't exist.`);
+    }
   }
 }
