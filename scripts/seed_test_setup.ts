@@ -1,5 +1,5 @@
 import pg from "pg";
-import { generateApiKey } from "../src/crypto.js";
+import { generateApiKey } from "../src/security/apiKeys.js";
 
 /**
  * One-off helper to seed a test identity + upstream server + permission row so Phase 1
