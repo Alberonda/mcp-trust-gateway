@@ -1,6 +1,6 @@
 import { AuditStatus } from "../constants.js";
 import type { AuditLogRepository } from "../db/AuditLogRepository.js";
-import type { PermissionRepository } from "../db/PermissionRepository.js";
+import type { AllowedTools, PermissionRepository } from "../db/PermissionRepository.js";
 import type { Identity, UpstreamServer } from "../db/types.js";
 import { redact } from "../redact.js";
 import { summarizeResult } from "./summarizeResult.js";
@@ -31,17 +31,19 @@ export class ToolCallHandler {
 
   /** tools/list itself is not permission-gated at this level — knowing a tool exists is
    *  not the same as being allowed to call it. ToolDiscoveryRouter is what actually
-   *  enforces per-tool visibility during discovery, via isToolAllowed() below. */
+   *  enforces per-tool visibility during discovery, via getAllowedToolNames() below. */
   async listTools(): Promise<unknown> {
     return this.upstreamClient.listTools();
   }
 
-  /** Would callTool(toolName, ...) be allowed right now, without actually calling or
-   *  auditing anything? Used by ToolDiscoveryRouter to filter find_tool results down to
-   *  only what this identity could actually call — so discovery is exactly as strict as
-   *  calling, never a way to enumerate tools you have no access to. */
-  async isToolAllowed(toolName: string): Promise<boolean> {
-    return this.permissions.isCallAllowed(this.identity.id, this.upstreamServer.id, toolName);
+  /** Every tool this identity may call on this server, in one query — used by
+   *  ToolDiscoveryRouter to filter a whole find_tool candidate list at once instead of
+   *  querying isCallAllowed once per candidate tool (which would cost one Postgres round
+   *  trip per tool across every connected server on every discovery call). Discovery ends
+   *  up exactly as strict as calling, never a way to enumerate tools you have no access
+   *  to — just resolved with O(servers) queries instead of O(servers × tools). */
+  async getAllowedToolNames(): Promise<AllowedTools> {
+    return this.permissions.findAllowedToolNames(this.identity.id, this.upstreamServer.id);
   }
 
   async callTool(toolName: string, args: unknown): Promise<ToolCallResult> {

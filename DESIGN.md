@@ -277,6 +277,39 @@ servers."*
 
 Total automated coverage after Phase 2: **51 tests** (34 unit + 17 integration), all green.
 
+### Post-Phase-2 self-audit (2026-07-29 — SOLID/scalability review before starting Phase 3)
+
+Requested explicitly before continuing: re-check the Phase 2 code itself against the same
+bar as the earlier refactor (SOLID, no magic values, scalability), not just "does it work."
+Five real issues found and fixed, not cosmetic ones:
+
+1. **Magic strings**: `"find_tool"`/`"call_tool"` were repeated as bare literals in
+   `META_TOOLS` and in `handleMetaToolCall`'s dispatch — renaming one wouldn't have updated
+   the other. Extracted a single `MetaTool` const object both now reference.
+2. **DIP violation**: `index.ts`'s `connectServer()` helper was typed against
+   `PostgresPermissionRepository`/`PostgresAuditLogRepository` (concrete classes) instead of
+   the `PermissionRepository`/`AuditLogRepository` interfaces `ToolCallHandler` itself
+   correctly depends on. Fixed for consistency.
+3. **Inconsistent/dishonest data**: `ToolDiscoveryRouter`'s audit entry for an
+   unknown-server call hardcoded `durationMs: 0` instead of using an injectable clock like
+   `ToolCallHandler` does. Added the same `now: () => number` pattern.
+4. **Real scalability bug**: `findTool()` called `ToolCallHandler.isToolAllowed()` once per
+   *candidate tool* — with N servers and M tools each, that's O(N × M) Postgres round trips
+   for a single search. Replaced with `PermissionRepository.findAllowedToolNames()`
+   (`AllowedTools = "all" | ReadonlySet<string>`), one query per server, checked in memory
+   against every candidate — O(N) round trips instead. `ToolCallHandler.isToolAllowed()`
+   was removed (dead after this change) in favor of `ToolCallHandler.getAllowedToolNames()`.
+5. **Real scalability bug**: `findTool()` awaited each server's handler sequentially in a
+   `for` loop — total latency was the *sum* of every connected server's response time.
+   Rewritten with `Promise.all` across handlers (and across each handler's own
+   `listTools()`/`getAllowedToolNames()` pair), so total latency is bounded by the slowest
+   single server, not the sum of all of them.
+
+Re-verified after the fixes: 54 tests (34 unit + 20 integration, +3 new integration tests
+for `findAllowedToolNames`), the real two-server manual demo, and the token measurement
+script all still produce identical, correct results (97.1% reduction unchanged) — the
+fixes changed the implementation's shape, not its observable behavior.
+
 ### Phase 3 (was Phase 2 — parity/hygiene, still worth doing, just not the differentiator)
 - [ ] Replace static API keys with short-lived session tokens (issued after some login step)
       + rotation of the stored upstream credentials.
