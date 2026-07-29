@@ -75,3 +75,36 @@ test(
     assert.deepEqual(servers, []);
   }),
 );
+
+test(
+  "updateCredential replaces the encrypted fields in place, keeping the same id/name",
+  withTransaction(async ({ db }) => {
+    const {
+      rows: [server],
+    } = await db.query<{ id: string }>(
+      `INSERT INTO upstream_servers (name, command, encrypted_credential, credential_iv, credential_auth_tag)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      ["github", "npx -y @modelcontextprotocol/server-github", Buffer.from("old-cipher"), Buffer.from("old-iv-12by"), Buffer.from("old-auth-tag-16b")],
+    );
+    const repo = new PostgresUpstreamServerRepository(db);
+    const newCredential = { ciphertext: Buffer.from("new-cipher"), iv: Buffer.from("new-iv-12by"), authTag: Buffer.from("new-auth-tag-16b") };
+
+    await repo.updateCredential(server.id, newCredential);
+
+    const updated = await repo.findByName("github");
+    assert.equal(updated?.id, server.id, "rotating a credential must never change the server's id");
+    assert.ok(newCredential.ciphertext.equals(updated!.credential!.ciphertext));
+    assert.ok(newCredential.iv.equals(updated!.credential!.iv));
+    assert.ok(newCredential.authTag.equals(updated!.credential!.authTag));
+  }),
+);
+
+test(
+  "updateCredential throws for a server id that doesn't exist, instead of silently doing nothing",
+  withTransaction(async ({ db }) => {
+    const repo = new PostgresUpstreamServerRepository(db);
+    const fakeCredential = { ciphertext: Buffer.from("c"), iv: Buffer.from("i"), authTag: Buffer.from("a") };
+
+    await assert.rejects(() => repo.updateCredential("00000000-0000-0000-0000-000000000000", fakeCredential));
+  }),
+);

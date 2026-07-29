@@ -467,10 +467,37 @@ round-trip, so it keeps using its API key directly, as before).
   token (401 on reuse). `scripts/manual_test_http.ts` covers all of this.
 - 84 tests total (58 unit + 26 integration) after this sub-phase, all green.
 
-- [ ] **3c** — rotation of stored upstream credentials (re-encrypt in place without
-      changing the server's id, so existing permission grants don't need to move).
-- [ ] **3d** — a way to actually read the audit log comfortably (CLI query tool at
-      minimum; a small web view if it's worth it by then).
+**3c — credential rotation: done, 2026-07-29.** `UpstreamServerRepository.updateCredential()`
+re-encrypts a server's stored secret in place — same id/name/command, so every existing
+permission grant referencing that server keeps working unchanged; only the credential
+itself changes. Throws for a nonexistent server id instead of silently doing nothing.
+`scripts/rotate_upstream_credential.ts` is the operator-facing entry point (server name +
+new plaintext credential as CLI args). Only affects connections made *after* rotation —
+already-connected sessions/processes keep whatever credential they started with until they
+reconnect, which was judged not worth engineering further given both entry points'
+connections are already short-lived (see DESIGN.md's Phase 2.5 notes on
+`PerSessionUpstreamConnectionProvider`).
+- **Verified against real Postgres with a real encrypted round trip**: registered a test
+  server with an encrypted credential, ran the rotation script against it, then decrypted
+  the stored value with `CredentialVault` directly and confirmed it matched the *new*
+  plaintext, not the old one — not just that the database row changed shape.
+- 3 new integration tests (rotate-and-verify, id-preserved-across-rotation,
+  throws-for-unknown-server-id).
+
+**3d — audit log viewer: done, 2026-07-29.** `AuditLogRepository.search()` — filter by any
+combination of identity name, server, status, and a result limit, or none at all (returns
+the most recent entries across every identity). `scripts/view_audit_log.ts` is the CLI:
+`npx tsx scripts/view_audit_log.ts --server=github --status=denied --limit=10`. Kept as a
+CLI, not a web view, matching the phase plan's "at minimum" bar — a web UI wasn't judged
+worth the added surface area yet.
+- **Verified against real accumulated data**: ran the CLI against the dev database's real
+  audit trail (built up over every manual test in this session) with and without filters —
+  output correctly showed identity names, server/tool pairs, status, duration, and a
+  one-line result summary, filtered exactly as requested.
+- 4 new integration tests for `search()` (no filters, identity-name filter, combined
+  server+status filter, limit).
+
+Total after Phase 3 (3a-3d): **90 tests** (58 unit + 32 integration), all green.
 
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB

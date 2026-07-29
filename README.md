@@ -12,9 +12,8 @@ first in any new session.
 
 ## Status
 
-Phases 1 and 2 are complete and verified against real Postgres and real MCP servers — not
-just intended behavior. 51 automated tests (34 unit + 17 integration), plus two specific,
-falsifiable claims proven with real measurements:
+Phases 1, 2, 2.5, and 3 are complete and verified against real Postgres and real MCP
+servers — not just intended behavior. 90 automated tests (58 unit + 32 integration), plus:
 
 - **Governance holds across multiple servers**: an identity can only discover/call tools on
   servers it has a grant for, verified against two real filesystem MCP servers with
@@ -24,8 +23,18 @@ falsifiable claims proven with real measurements:
   regardless of how many real servers/tools sit behind it — measured with a real tokenizer
   at **97.1% fewer tokens** than a direct multi-server connection
   (`scripts/measure_context_overhead.ts`).
+- **Permissions are per-user, not per-key**: a brand-new API key for an existing user
+  immediately shares that user's grants, verified end to end (not just at the schema
+  level) by provisioning one and connecting with it.
+- **HTTP mode's `/mcp` requires a session token, not the raw API key**: verified the full
+  login → connect → call → logout round trip against a real running server, including
+  confirming the raw API key stops working directly against `/mcp` once you've logged in
+  (`scripts/manual_test_http.ts`).
+- **Operator tooling**: `scripts/rotate_upstream_credential.ts` (re-encrypt a stored
+  secret in place) and `scripts/view_audit_log.ts` (a filterable CLI over the audit
+  trail), both exercised against real data, not just their own tests.
 
-See `DESIGN.md`'s status log and Phase 2 section for the full detail.
+See `DESIGN.md`'s status log and phase sections for the full detail.
 
 ## Setup
 

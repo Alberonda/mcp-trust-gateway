@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuditStatus } from "../constants.js";
-import type { AuditEntry, AuditLogRepository, StoredAuditEntry } from "../db/AuditLogRepository.js";
+import type { AuditEntry, AuditLogRepository, AuditLogRow, StoredAuditEntry } from "../db/AuditLogRepository.js";
 import type { AllowedTools, PermissionRepository } from "../db/PermissionRepository.js";
 import type { Identity, UpstreamServer } from "../db/types.js";
 import { REDACTED_PLACEHOLDER } from "../constants.js";
@@ -37,6 +37,9 @@ class FakeAuditLogRepository implements AuditLogRepository {
       .filter((entry) => entry.identityId === identityId)
       .slice(0, limit)
       .map((entry, index) => ({ ...entry, id: index, createdAt: new Date() }));
+  }
+  async search(): Promise<AuditLogRow[]> {
+    return [];
   }
 }
 
@@ -178,6 +181,7 @@ test("a successful call still returns its real result even if writing the audit 
       throw new Error("Postgres is unreachable");
     },
     findRecentByIdentity: async () => [],
+    search: async () => [],
   };
   const safeAuditLog = new SafeAuditLogRepository(throwingAuditLog, () => {});
   const upstreamClient = new FakeUpstreamToolClient({ content: [{ type: "text", text: "the real result" }] });

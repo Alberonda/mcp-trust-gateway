@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { AuditEntry, AuditLogRepository, StoredAuditEntry } from "./AuditLogRepository.js";
+import type { AuditEntry, AuditLogRepository, AuditLogRow, StoredAuditEntry } from "./AuditLogRepository.js";
 import { SafeAuditLogRepository } from "./SafeAuditLogRepository.js";
 
 const sampleEntry: AuditEntry = {
@@ -20,6 +20,9 @@ class ThrowingAuditLogRepository implements AuditLogRepository {
   async findRecentByIdentity(): Promise<StoredAuditEntry[]> {
     throw new Error("Postgres is unreachable");
   }
+  async search(): Promise<AuditLogRow[]> {
+    throw new Error("Postgres is unreachable");
+  }
 }
 
 class RecordingAuditLogRepository implements AuditLogRepository {
@@ -28,6 +31,9 @@ class RecordingAuditLogRepository implements AuditLogRepository {
     this.written.push(entry);
   }
   async findRecentByIdentity(): Promise<StoredAuditEntry[]> {
+    return [];
+  }
+  async search(): Promise<AuditLogRow[]> {
     return [];
   }
 }

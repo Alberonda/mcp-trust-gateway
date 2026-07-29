@@ -1,4 +1,4 @@
-import type { AuditEntry, AuditLogRepository, StoredAuditEntry } from "./AuditLogRepository.js";
+import type { AuditEntry, AuditLogRepository, AuditLogRow, AuditSearchFilters, StoredAuditEntry } from "./AuditLogRepository.js";
 
 /**
  * Wraps any AuditLogRepository so a failure to *write* an audit entry can never surface as
@@ -32,6 +32,10 @@ export class SafeAuditLogRepository implements AuditLogRepository {
 
   async findRecentByIdentity(identityId: string, limit: number): Promise<StoredAuditEntry[]> {
     return this.inner.findRecentByIdentity(identityId, limit);
+  }
+
+  async search(filters: AuditSearchFilters): Promise<AuditLogRow[]> {
+    return this.inner.search(filters);
   }
 }
 

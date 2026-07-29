@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { AuditEntry, AuditLogRepository, StoredAuditEntry } from "../db/AuditLogRepository.js";
+import type { AuditEntry, AuditLogRepository, AuditLogRow, StoredAuditEntry } from "../db/AuditLogRepository.js";
 import type { AllowedTools, PermissionRepository } from "../db/PermissionRepository.js";
 import type { Identity, UpstreamServer } from "../db/types.js";
 import { ToolCallHandler } from "./ToolCallHandler.js";
@@ -39,6 +39,9 @@ class FakePermissionRepository implements PermissionRepository {
 class NullAuditLogRepository implements AuditLogRepository {
   async write(): Promise<void> {}
   async findRecentByIdentity(): Promise<StoredAuditEntry[]> {
+    return [];
+  }
+  async search(): Promise<AuditLogRow[]> {
     return [];
   }
 }
@@ -186,6 +189,9 @@ test("call_tool for a server this identity was never connected to still writes a
       this.entries.push(entry);
     }
     async findRecentByIdentity(): Promise<StoredAuditEntry[]> {
+      return [];
+    }
+    async search(): Promise<AuditLogRow[]> {
       return [];
     }
   })();

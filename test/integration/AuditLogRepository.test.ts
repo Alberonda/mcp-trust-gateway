@@ -101,3 +101,114 @@ test(
     assert.equal(entriesForA[0].toolName, "tool-a");
   }),
 );
+
+test(
+  "search() with no filters returns the most recent entries across every identity",
+  withTransaction(async ({ db }) => {
+    const repo = new PostgresAuditLogRepository(db);
+    const identityA = await seedIdentity(db, "identity-a");
+    const identityB = await seedIdentity(db, "identity-b");
+    for (const identityId of [identityA, identityB]) {
+      await repo.write({
+        identityId,
+        serverName: "s",
+        toolName: "t",
+        paramsRedacted: {},
+        status: AuditStatus.AllowedSuccess,
+        resultSummary: "ok",
+        durationMs: 1,
+      });
+    }
+
+    const results = await repo.search({ limit: 10 });
+
+    assert.equal(results.length, 2, "no filters means every identity's entries are eligible");
+  }),
+);
+
+test(
+  "search() filters by identity name, and includes it in the result for display",
+  withTransaction(async ({ db }) => {
+    const repo = new PostgresAuditLogRepository(db);
+    const identityA = await seedIdentity(db, "identity-a");
+    await seedIdentity(db, "identity-b"); // no entries written for this one
+    await repo.write({
+      identityId: identityA,
+      serverName: "s",
+      toolName: "t",
+      paramsRedacted: {},
+      status: AuditStatus.AllowedSuccess,
+      resultSummary: "ok",
+      durationMs: 1,
+    });
+
+    const results = await repo.search({ identityName: "identity-a", limit: 10 });
+
+    assert.equal(results.length, 1);
+    assert.equal(results[0].identityName, "identity-a");
+  }),
+);
+
+test(
+  "search() filters by server name and status, combined",
+  withTransaction(async ({ db }) => {
+    const repo = new PostgresAuditLogRepository(db);
+    const identityId = await seedIdentity(db, "agent");
+    await repo.write({
+      identityId,
+      serverName: "server-a",
+      toolName: "t",
+      paramsRedacted: {},
+      status: AuditStatus.Denied,
+      resultSummary: "denied",
+      durationMs: 1,
+    });
+    await repo.write({
+      identityId,
+      serverName: "server-a",
+      toolName: "t",
+      paramsRedacted: {},
+      status: AuditStatus.AllowedSuccess,
+      resultSummary: "ok",
+      durationMs: 1,
+    });
+    await repo.write({
+      identityId,
+      serverName: "server-b",
+      toolName: "t",
+      paramsRedacted: {},
+      status: AuditStatus.Denied,
+      resultSummary: "denied",
+      durationMs: 1,
+    });
+
+    const results = await repo.search({ serverName: "server-a", status: AuditStatus.Denied, limit: 10 });
+
+    assert.equal(results.length, 1, "only the entry matching BOTH filters should be returned");
+    assert.equal(results[0].serverName, "server-a");
+    assert.equal(results[0].status, AuditStatus.Denied);
+  }),
+);
+
+test(
+  "search() respects the limit",
+  withTransaction(async ({ db }) => {
+    const repo = new PostgresAuditLogRepository(db);
+    const identityId = await seedIdentity(db, "agent");
+    for (let i = 0; i < 5; i++) {
+      await repo.write({
+        identityId,
+        serverName: "s",
+        toolName: `t${i}`,
+        paramsRedacted: {},
+        status: AuditStatus.AllowedSuccess,
+        resultSummary: "ok",
+        durationMs: 1,
+      });
+    }
+
+    const results = await repo.search({ limit: 2 });
+
+    assert.equal(results.length, 2);
+  }),
+);
