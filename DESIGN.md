@@ -948,6 +948,25 @@ discipline, it's the database enforcing it).
   added to the backlog below.
 - 131 tests total (78 unit + 51 integration + 2 e2e), all green.
 
+**Postscript, same day — a real, more serious mistake found and corrected**:
+`scripts/seed_default_roles.ts` was run once against the Neon database (the one Render's
+HTTP deployment actually uses), registering jira/sonarqube/jenkins there. This looked
+fine at a glance (each process spawns without crashing) and was reported as such — but
+was wrong. Checked the credential actually stored for `sonarqube` and found
+`SONARQUBE_URL=https://sonarqube.softwarefactory.cloud.corpintra.net` — the *same*
+internal-only corporate domain already confirmed unreachable from the public internet
+for `jira`/`jenkins` (see `bridge/`'s section above). A subprocess spawning successfully
+only proves the *binary* starts; it says nothing about whether the *network call it will
+eventually try to make* can succeed. All three were removed from Neon after this was
+caught. **Net result: none of this user's three real tools can currently be served by
+the Render/Neon deployment at all** — not a bug, a hard fact of where those services
+live. The relay-agent design proposed earlier (see `bridge/`'s section) stops being an
+optional refinement and becomes the only path to ever making HTTP mode useful for them;
+until it exists, local/stdio mode (running on a machine that's actually on that
+corporate network) is the only way to reach jira/sonarqube/jenkins at all. Corrected
+`scripts/seed_default_roles.ts`'s docstring with an explicit warning about this so it
+isn't run against a publicly-hosted database again without noticing.
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no

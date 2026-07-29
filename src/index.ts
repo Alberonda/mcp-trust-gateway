@@ -14,6 +14,7 @@ import { PostgresUpstreamServerRepository } from "./db/UpstreamServerRepository.
 import { PostgresUserCredentialRepository } from "./db/UserCredentialRepository.js";
 import { PostgresUserRepository } from "./db/UserRepository.js";
 import { AdminToolHandler } from "./gateway/AdminToolHandler.js";
+import { connectAccessibleServers } from "./gateway/connectAccessibleServers.js";
 import { SelfServiceHandler } from "./gateway/SelfServiceHandler.js";
 import { ToolCallHandler } from "./gateway/ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "./gateway/ToolDiscoveryRouter.js";
@@ -63,15 +64,12 @@ async function main(): Promise<void> {
   const accessibleServerIds = await permissions.findAccessibleServerIds(identity.userId);
   const accessibleServers = await upstreamServers.findManyByIds(accessibleServerIds);
 
-  const handlers = await Promise.all(
-    accessibleServers.map(async (server) => {
-      // This user's OWN credential for this server, or null — there is no shared default
-      // to fall back to (see db/UserCredentialRepository.ts's docstring): a server row
-      // must never mean every user shares one person's personal access token.
-      const credential = await userCredentials.find(identity.userId, server.id);
-      const { client } = await connectionProvider.connect(server, credential);
-      return new ToolCallHandler(identity, server, permissions, auditLog, client);
-    }),
+  // Isolated per server — one misconfigured server (e.g. missing credentials) must never
+  // prevent connecting to every OTHER accessible server too (see
+  // gateway/connectAccessibleServers.ts's docstring for the real incident that found this).
+  const connectedServers = await connectAccessibleServers(accessibleServers, identity.userId, userCredentials, connectionProvider);
+  const handlers = connectedServers.map(
+    ({ server, connected: { client } }) => new ToolCallHandler(identity, server, permissions, auditLog, client),
   );
   const selfService = new SelfServiceHandler(identity.userId, permissions, upstreamServers, userCredentials, vault);
   const adminHandler = (await roles.isUserAdmin(identity.userId))

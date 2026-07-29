@@ -32,6 +32,7 @@ import { PostgresUserRepository } from "../db/UserRepository.js";
 import type { UserRepository } from "../db/UserRepository.js";
 import type { Identity } from "../db/types.js";
 import { AdminToolHandler } from "../gateway/AdminToolHandler.js";
+import { connectAccessibleServers } from "../gateway/connectAccessibleServers.js";
 import { SelfServiceHandler } from "../gateway/SelfServiceHandler.js";
 import { ToolCallHandler } from "../gateway/ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "../gateway/ToolDiscoveryRouter.js";
@@ -93,15 +94,13 @@ async function createMcpSession(identity: Identity, deps: Dependencies): Promise
   const accessibleServerIds = await deps.permissions.findAccessibleServerIds(identity.userId);
   const accessibleServers = await deps.upstreamServers.findManyByIds(accessibleServerIds);
 
-  // This user's OWN credential for each server, or null — there is no shared default to
-  // fall back to (see db/UserCredentialRepository.ts's docstring): a server row must
-  // never mean every user shares one person's personal access token.
-  const credentials = await Promise.all(accessibleServers.map((server) => deps.userCredentials.find(identity.userId, server.id)));
-  const connectedUpstreams = await Promise.all(
-    accessibleServers.map((server, i) => deps.connectionProvider.connect(server, credentials[i])),
-  );
-  const handlers = connectedUpstreams.map(
-    ({ client }, i) => new ToolCallHandler(identity, accessibleServers[i], deps.permissions, deps.auditLog, client),
+  // Isolated per server — one misconfigured server (e.g. missing credentials) must never
+  // prevent connecting to every OTHER accessible server too (see
+  // gateway/connectAccessibleServers.ts's docstring for the real incident that found this).
+  const connectedServers = await connectAccessibleServers(accessibleServers, identity.userId, deps.userCredentials, deps.connectionProvider);
+  const connectedUpstreams = connectedServers.map(({ connected }) => connected);
+  const handlers = connectedServers.map(
+    ({ server, connected: { client } }) => new ToolCallHandler(identity, server, deps.permissions, deps.auditLog, client),
   );
   const selfService = new SelfServiceHandler(identity.userId, deps.permissions, deps.upstreamServers, deps.userCredentials, deps.vault);
   const adminHandler = (await deps.roles.isUserAdmin(identity.userId))
