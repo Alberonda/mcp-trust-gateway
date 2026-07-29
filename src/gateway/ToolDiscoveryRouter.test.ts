@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AuditEntry, AuditLogRepository, StoredAuditEntry } from "../db/AuditLogRepository.js";
-import type { PermissionRepository } from "../db/PermissionRepository.js";
+import type { AllowedTools, PermissionRepository } from "../db/PermissionRepository.js";
 import type { Identity, UpstreamServer } from "../db/types.js";
 import { ToolCallHandler } from "./ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "./ToolDiscoveryRouter.js";
@@ -27,6 +27,12 @@ class FakePermissionRepository implements PermissionRepository {
 
   async findAccessibleServerIds(): Promise<string[]> {
     return Object.keys(this.allowedTools);
+  }
+
+  async findAllowedToolNames(_identityId: string, serverId: string): Promise<AllowedTools> {
+    const allowed = this.allowedTools[serverId];
+    if (!allowed) return new Set();
+    return allowed === "*" ? "all" : allowed;
   }
 }
 

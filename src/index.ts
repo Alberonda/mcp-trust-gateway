@@ -7,8 +7,10 @@ import type { ServerResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { loadConfig } from "./config.js";
 import { PostgresAuditLogRepository } from "./db/AuditLogRepository.js";
+import type { AuditLogRepository } from "./db/AuditLogRepository.js";
 import { PostgresIdentityRepository } from "./db/IdentityRepository.js";
 import { PostgresPermissionRepository } from "./db/PermissionRepository.js";
+import type { PermissionRepository } from "./db/PermissionRepository.js";
 import { createPool } from "./db/pool.js";
 import { PostgresUpstreamServerRepository } from "./db/UpstreamServerRepository.js";
 import type { Identity, UpstreamServer } from "./db/types.js";
@@ -77,8 +79,8 @@ async function connectServer(
   server: UpstreamServer,
   vault: CredentialVault,
   identity: Identity,
-  permissions: PostgresPermissionRepository,
-  auditLog: PostgresAuditLogRepository,
+  permissions: PermissionRepository,
+  auditLog: AuditLogRepository,
 ): Promise<ToolCallHandler> {
   const credential = server.credential ? vault.decrypt(server.credential) : undefined;
 

@@ -1,4 +1,5 @@
 import { AuditStatus } from "../constants.js";
+import type { AllowedTools } from "../db/PermissionRepository.js";
 import type { AuditLogRepository } from "../db/AuditLogRepository.js";
 import type { Identity } from "../db/types.js";
 import { redact } from "../redact.js";
@@ -13,6 +14,13 @@ import type { ToolCallResult } from "./UpstreamToolClient.js";
  * accessible server without modifying ToolCallHandler itself (Open/Closed).
  */
 
+/** Single source of truth for the two meta-tool names — referenced by both META_TOOLS'
+ *  own schema entries and handleMetaToolCall's dispatch, so the two can never drift apart. */
+const MetaTool = {
+  FindTool: "find_tool",
+  CallTool: "call_tool",
+} as const;
+
 export interface DiscoveredTool {
   readonly server: string;
   readonly name: string;
@@ -23,7 +31,7 @@ export interface DiscoveredTool {
  *  context for, no matter how many real servers/tools are registered behind the gateway. */
 export const META_TOOLS = [
   {
-    name: "find_tool",
+    name: MetaTool.FindTool,
     description:
       "Search for available tools across every server you have access to. Call this first " +
       "to discover what you can do, then call call_tool with the exact server/tool it returns.",
@@ -33,7 +41,7 @@ export const META_TOOLS = [
     },
   },
   {
-    name: "call_tool",
+    name: MetaTool.CallTool,
     description: "Call a real tool discovered via find_tool.",
     inputSchema: {
       type: "object",
@@ -57,6 +65,14 @@ function extractToolSummaries(listToolsResult: unknown): Array<{ name: string; d
     .map((tool) => ({ name: tool.name, description: tool.description ?? "" }));
 }
 
+function isToolNameMatch(tool: { name: string; description: string }, term: string): boolean {
+  return !term || tool.name.toLowerCase().includes(term) || tool.description.toLowerCase().includes(term);
+}
+
+function isPermitted(allowed: AllowedTools, toolName: string): boolean {
+  return allowed === "all" || allowed.has(toolName);
+}
+
 export class ToolDiscoveryRouter {
   constructor(
     private readonly handlers: readonly ToolCallHandler[],
@@ -65,6 +81,9 @@ export class ToolDiscoveryRouter {
      *  ToolCallHandler that already owns identity/audit wiring for its own server. */
     private readonly identity: Identity,
     private readonly auditLog: AuditLogRepository,
+    /** Injectable so tests get deterministic, non-flaky duration_ms values — same pattern
+     *  as ToolCallHandler's own clock. */
+    private readonly now: () => number = Date.now,
   ) {}
 
   listMetaTools(): { tools: typeof META_TOOLS } {
@@ -74,21 +93,26 @@ export class ToolDiscoveryRouter {
   /** Searches every accessible server's real tool list by name/description substring match
    *  (case-insensitive; empty query matches everything), then drops anything this identity
    *  couldn't actually call — discovery is exactly as strict as calling, never a way to
-   *  enumerate tools you have no access to (see ToolCallHandler.isToolAllowed). */
+   *  enumerate tools you have no access to.
+   *
+   *  Every handler is queried in parallel (Promise.all) rather than one at a time, so total
+   *  latency is bounded by the slowest single server, not the sum of all of them. Each
+   *  handler needs exactly one permissions query (getAllowedToolNames), not one per
+   *  candidate tool — with N servers and M tools each, that's O(N) Postgres round trips
+   *  instead of O(N × M). */
   async findTool(query: string): Promise<DiscoveredTool[]> {
     const term = query.trim().toLowerCase();
-    const matches: DiscoveredTool[] = [];
 
-    for (const handler of this.handlers) {
-      const candidates = extractToolSummaries(await handler.listTools());
-      for (const tool of candidates) {
-        const isMatch = !term || tool.name.toLowerCase().includes(term) || tool.description.toLowerCase().includes(term);
-        if (!isMatch) continue;
-        if (!(await handler.isToolAllowed(tool.name))) continue;
-        matches.push({ server: handler.serverName, name: tool.name, description: tool.description });
-      }
-    }
-    return matches;
+    const perServerMatches = await Promise.all(
+      this.handlers.map(async (handler) => {
+        const [listResult, allowed] = await Promise.all([handler.listTools(), handler.getAllowedToolNames()]);
+        return extractToolSummaries(listResult)
+          .filter((tool) => isToolNameMatch(tool, term) && isPermitted(allowed, tool.name))
+          .map((tool) => ({ server: handler.serverName, name: tool.name, description: tool.description }));
+      }),
+    );
+
+    return perServerMatches.flat();
   }
 
   /** Routes to the ToolCallHandler for `server` — permission check, forwarding, and
@@ -99,6 +123,7 @@ export class ToolDiscoveryRouter {
    *  it (the gateway process never connected to a server this identity has zero grants on
    *  in the first place). */
   async callTool(server: string, tool: string, args: unknown): Promise<ToolCallResult> {
+    const startedAt = this.now();
     const handler = this.handlers.find((h) => h.serverName === server);
     if (!handler) {
       await this.auditLog.write({
@@ -108,7 +133,7 @@ export class ToolDiscoveryRouter {
         paramsRedacted: redact(args ?? {}),
         status: AuditStatus.Denied,
         resultSummary: `Denied: identity "${this.identity.name}" has no access to server "${server}" (unknown or unpermitted).`,
-        durationMs: 0,
+        durationMs: this.now() - startedAt,
       });
       return {
         isError: true,
@@ -125,13 +150,13 @@ export class ToolDiscoveryRouter {
   async handleMetaToolCall(name: string, args: unknown): Promise<ToolCallResult> {
     const params = (args ?? {}) as Record<string, unknown>;
 
-    if (name === "find_tool") {
+    if (name === MetaTool.FindTool) {
       const query = typeof params.query === "string" ? params.query : "";
       const results = await this.findTool(query);
       return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
     }
 
-    if (name === "call_tool") {
+    if (name === MetaTool.CallTool) {
       const server = typeof params.server === "string" ? params.server : undefined;
       const tool = typeof params.tool === "string" ? params.tool : undefined;
       if (!server || !tool) {

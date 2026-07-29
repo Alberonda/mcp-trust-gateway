@@ -118,3 +118,53 @@ test(
     assert.deepEqual(accessible, []);
   }),
 );
+
+test(
+  "findAllowedToolNames returns 'all' when there's a blanket grant, even alongside specific ones",
+  withTransaction(async ({ db }) => {
+    const { identityId, serverId } = await seedIdentityAndServer(db);
+    await db.query(`INSERT INTO permissions (identity_id, server_id, tool_name) VALUES ($1, $2, 'read_file')`, [
+      identityId,
+      serverId,
+    ]);
+    await db.query(`INSERT INTO permissions (identity_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
+      identityId,
+      serverId,
+    ]);
+
+    const allowed = await new PostgresPermissionRepository(db).findAllowedToolNames(identityId, serverId);
+
+    assert.equal(allowed, "all");
+  }),
+);
+
+test(
+  "findAllowedToolNames returns the exact set of granted tool names when there's no blanket grant",
+  withTransaction(async ({ db }) => {
+    const { identityId, serverId } = await seedIdentityAndServer(db);
+    await db.query(`INSERT INTO permissions (identity_id, server_id, tool_name) VALUES ($1, $2, 'read_file')`, [
+      identityId,
+      serverId,
+    ]);
+    await db.query(`INSERT INTO permissions (identity_id, server_id, tool_name) VALUES ($1, $2, 'list_directory')`, [
+      identityId,
+      serverId,
+    ]);
+
+    const allowed = await new PostgresPermissionRepository(db).findAllowedToolNames(identityId, serverId);
+
+    assert.notEqual(allowed, "all");
+    assert.deepEqual(allowed, new Set(["read_file", "list_directory"]));
+  }),
+);
+
+test(
+  "findAllowedToolNames returns an empty set for a server with no grants",
+  withTransaction(async ({ db }) => {
+    const { identityId, serverId } = await seedIdentityAndServer(db);
+
+    const allowed = await new PostgresPermissionRepository(db).findAllowedToolNames(identityId, serverId);
+
+    assert.deepEqual(allowed, new Set());
+  }),
+);
