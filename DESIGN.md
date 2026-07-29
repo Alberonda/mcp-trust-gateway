@@ -544,6 +544,12 @@ Total after Phase 3 (3a-3d): **90 tests** (58 unit + 32 integration), all green.
       general solution exists yet anywhere.
 
 ### Backlog (not scheduled to a phase yet)
+
+Compiled 2026-07-29 after being asked directly "if we finish X, is that everything?" —
+honest answer was no, and this list is that "no" written down instead of left implicit.
+Not exhaustive either; real use will surface more. Grouped by what kind of gap each is.
+
+**Design/architecture**
 - [ ] **Improve `find_tool`'s matching beyond plain substring search.** Today
       `ToolDiscoveryRouter.findTool()` does a case-insensitive `.includes()` on the tool's
       name/description — no synonyms, no semantic understanding (a query of "borrar" would
@@ -553,6 +559,73 @@ Total after Phase 3 (3a-3d): **90 tests** (58 unit + 32 integration), all green.
       RAGWire already uses) is the natural upgrade path, at the cost of adding an
       embeddings-provider dependency to what's otherwise a deliberately lightweight gateway
       — worth weighing carefully before adding, not a default yes.
+- [ ] **TOCTOU window between permission check and call.** Already documented under
+      "Architectural gaps found 2026-07-29" (item 1's tail note) — a mid-flight permission
+      revoke doesn't stop a call already in flight. Low severity, still unfixed.
+- [ ] **Shared/pooled upstream connections.** Already flagged in Phase 2.5's "Not yet
+      done" note — today each session/process opens its own subprocess to a real server
+      even if another identity is already connected to the same one. Works, just not as
+      efficient as it could be under many concurrent users on the same server.
+- [ ] **Master encryption key rotation.** `GATEWAY_ENCRYPTION_KEY` encrypts every stored
+      upstream credential. Phase 3c added rotation for one server's *credential*, but
+      there's no equivalent for rotating the *master key itself* — that would require
+      decrypting every `upstream_servers` row with the old key and re-encrypting with a
+      new one in one pass. If the master key ever leaked, every stored credential would
+      need re-issuing at the source (GitHub, etc.) regardless, but a rotation path would
+      still reduce the blast radius of a leak that's caught before misuse.
+
+**Production readiness**
+- [ ] **No CI.** Tests only run when triggered manually — nothing validates a change
+      automatically before it lands.
+- [ ] **No automated tests for either composition root** (`index.ts`, `httpGateway/
+      httpServer.ts`) — both covered by real but manual smoke tests only (see "Testing").
+- [ ] **No `/health` endpoint on HTTP mode** — no standard place for a load balancer or
+      monitoring system to ask "is this instance alive."
+- [ ] **No admin tooling for users/permissions.** Granting access today means hand-written
+      SQL or one-off scripts built for demos (`scripts/lib/provisionUser.ts`,
+      `scripts/seed_phase2_demo.ts`) — there's no real "add a user, grant them a server"
+      command meant for repeated operational use.
+- [ ] **No high availability story.** HTTP mode is one process; if it goes down, the
+      service is down until something restarts it manually.
+- [ ] **Nothing supervises the process.** No `systemd`/PM2/container restart policy
+      configured anywhere — a crash just stays down.
+- [ ] **No Postgres backup strategy documented** — all governance data (permissions,
+      audit trail, encrypted credentials) lives in one database with no stated backup plan.
+- [ ] **No metrics/alerting** — the audit log tells you what happened after the fact, not
+      whether the service is currently healthy, slow, or running out of DB connections.
+- [ ] **Never exercised against a real credentialed upstream server** (GitHub, Slack,
+      etc.) end to end — the encryption round trip is unit/integration-tested in
+      isolation, but the full "real secret → encrypted → decrypted → used against a real
+      API" path has only ever been run with the credential-less filesystem server.
+- [ ] **No dependency-update process** — Express, the MCP SDK, etc. will need security
+      patches over time; nothing currently watches for or applies them.
+
+**Distribution/packaging**
+- [ ] **No `LICENSE` file.** For a project positioned as open source, this is a real gap —
+      today nobody else has a clear legal basis to use it.
+- [ ] **Not packaged for easy install** — no Docker image, no npm package; using it means
+      cloning the repo and building it yourself.
+- [ ] **No `docker-compose.yml`** (or equivalent) to bring up Postgres + the gateway
+      together — today that's several manual steps (see README.md's Setup).
+
+### Infrastructure requirements — not yet decided or provisioned
+
+What actually running this for real (not a local Docker Postgres + `npx tsx`) would need,
+none of which is decided yet:
+
+| Requirement | Current state |
+|---|---|
+| Postgres reachable over the network, migrated | Only ever run as a local Docker container; no managed-hosting decision made (RDS, Supabase, Neon, ...) |
+| A host to run `httpGateway/httpServer.ts` persistently, reachable by the whole team | Not decided — a VM? a container platform (Fly.io/Render/Railway)? |
+| Valid TLS (or a reverse proxy terminating it) | Code supports it (`HTTP_TLS_CERT_PATH`/`HTTP_TLS_KEY_PATH`), only ever tested with a self-signed cert — no automated renewal (Let's Encrypt or otherwise) |
+| Network isolation so only the gateway process can reach Postgres directly | The entire point of Phase 2.5, but no actual firewall/private-network setup exists anywhere — deploying this safely is currently left to whoever does it, with no guide |
+| Secrets management for `GATEWAY_ENCRYPTION_KEY`/`DATABASE_URL` | Plain environment variables; no Vault/AWS Secrets Manager/etc. integration |
+| Node.js ≥ 20 on the host | Declared in `package.json`'s `engines` — the one item here that IS already nailed down |
+
+Bottom line as of 2026-07-29: this project is proven to work against real data and real
+MCP servers, but is not yet packaged or documented well enough to hand to someone else to
+deploy safely. That's a distinct milestone from "the features work," worth treating as
+its own piece of work rather than assuming it falls out of finishing the backlog above.
 
 ## Status log
 
@@ -561,6 +634,11 @@ Total after Phase 3 (3a-3d): **90 tests** (58 unit + 32 integration), all green.
 > under their `###` headings above; this log just anchors them in chronological order
 > rather than repeating them. Read the phase sections for detail, this log for sequence.
 
+- **2026-07-29 (latest)**: Compiled the full remaining-work backlog (design/architecture +
+  production-readiness + distribution/packaging gaps) and a separate infrastructure
+  requirements table, after being asked directly "if we finish the known gaps, is that
+  everything?" — no, and it's now written down under "Backlog" and "Infrastructure
+  requirements" above instead of living only in conversation.
 - **2026-07-29 (latest)**: Phase 3 complete (3a per-user permissions, 3b session tokens,
   3c credential rotation, 3d audit log CLI viewer — see each sub-heading above). Also
   fixed a real gap found as a side effect of adding a second migration file:
