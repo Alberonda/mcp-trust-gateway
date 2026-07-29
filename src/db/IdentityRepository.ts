@@ -12,7 +12,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
 
   async findByApiKeyHash(hash: string): Promise<Identity | null> {
     const { rows } = await this.db.query<Identity>(
-      `SELECT id, name, api_key_hash AS "apiKeyHash", is_active AS "isActive"
+      `SELECT id, user_id AS "userId", name, api_key_hash AS "apiKeyHash", is_active AS "isActive"
        FROM identities WHERE api_key_hash = $1 AND is_active = true`,
       [hash],
     );

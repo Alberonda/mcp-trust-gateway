@@ -4,9 +4,16 @@ import { PostgresIdentityRepository } from "../../src/db/IdentityRepository.js";
 import { withTransaction } from "./setupDatabase.js";
 
 test(
-  "finds an active identity by its api_key_hash",
+  "finds an active identity by its api_key_hash, including its owning user's id",
   withTransaction(async ({ db }) => {
-    await db.query(`INSERT INTO identities (name, api_key_hash) VALUES ($1, $2)`, ["alice", "hash-abc"]);
+    const {
+      rows: [user],
+    } = await db.query<{ id: string }>(`INSERT INTO users (name) VALUES ('alice') RETURNING id`);
+    await db.query(`INSERT INTO identities (user_id, name, api_key_hash) VALUES ($1, $2, $3)`, [
+      user.id,
+      "alice",
+      "hash-abc",
+    ]);
 
     const identity = await new PostgresIdentityRepository(db).findByApiKeyHash("hash-abc");
 
@@ -14,6 +21,7 @@ test(
     assert.equal(identity.name, "alice");
     assert.equal(identity.apiKeyHash, "hash-abc");
     assert.equal(identity.isActive, true);
+    assert.equal(identity.userId, user.id);
   }),
 );
 
@@ -29,7 +37,11 @@ test(
 test(
   "returns null for a deactivated identity, even with the correct hash",
   withTransaction(async ({ db }) => {
-    await db.query(`INSERT INTO identities (name, api_key_hash, is_active) VALUES ($1, $2, false)`, [
+    const {
+      rows: [user],
+    } = await db.query<{ id: string }>(`INSERT INTO users (name) VALUES ('revoked-agent') RETURNING id`);
+    await db.query(`INSERT INTO identities (user_id, name, api_key_hash, is_active) VALUES ($1, $2, $3, false)`, [
+      user.id,
       "revoked-agent",
       "hash-revoked",
     ]);

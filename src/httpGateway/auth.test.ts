@@ -5,7 +5,13 @@ import type { Identity } from "../db/types.js";
 import { hashApiKey } from "../security/apiKeys.js";
 import { resolveIdentityFromAuthHeader } from "./auth.js";
 
-const testIdentity: Identity = { id: "id-1", name: "test-agent", apiKeyHash: hashApiKey("mtg_real-key"), isActive: true };
+const testIdentity: Identity = {
+  id: "id-1",
+  userId: "user-1",
+  name: "test-agent",
+  apiKeyHash: hashApiKey("mtg_real-key"),
+  isActive: true,
+};
 
 class FakeIdentityRepository implements IdentityRepository {
   async findByApiKeyHash(hash: string): Promise<Identity | null> {

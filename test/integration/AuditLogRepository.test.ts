@@ -2,16 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuditStatus } from "../../src/constants.js";
 import { PostgresAuditLogRepository } from "../../src/db/AuditLogRepository.js";
-import type { Queryable } from "../../src/db/Queryable.js";
+import { seedUserAndIdentity } from "./testFixtures.js";
 import { withTransaction } from "./setupDatabase.js";
+import type { Queryable } from "../../src/db/Queryable.js";
 
+/** audit_log still records identity_id (which specific credential made a call), not
+ *  user_id — see ToolCallHandler's comment on that decision — so tests here only need
+ *  the identityId half of seedUserAndIdentity's result. */
 async function seedIdentity(db: Queryable, name = "agent"): Promise<string> {
-  const {
-    rows: [identity],
-  } = await db.query<{ id: string }>(`INSERT INTO identities (name, api_key_hash) VALUES ($1, 'h') RETURNING id`, [
-    name,
-  ]);
-  return identity.id;
+  return (await seedUserAndIdentity(db, name)).identityId;
 }
 
 test(

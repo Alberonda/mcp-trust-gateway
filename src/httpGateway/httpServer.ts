@@ -61,7 +61,7 @@ interface Dependencies {
 }
 
 async function createSession(identity: Identity, deps: Dependencies): Promise<Session> {
-  const accessibleServerIds = await deps.permissions.findAccessibleServerIds(identity.id);
+  const accessibleServerIds = await deps.permissions.findAccessibleServerIds(identity.userId);
   const accessibleServers = await deps.upstreamServers.findManyByIds(accessibleServerIds);
   if (accessibleServers.length === 0) {
     throw new HttpStatusError(403, `Identity "${identity.name}" has no permission grants on any upstream server.`);
