@@ -16,9 +16,9 @@ token. This bridge exists for two narrower cases:
 
 Exactly one secret: `GATEWAY_API_KEY`. Never `DATABASE_URL`, never
 `GATEWAY_ENCRYPTION_KEY` — those stay exclusively on whatever server runs
-`httpGateway/httpServer.ts`. This process has no business logic of its own: no permission
-checks, no decryption, nothing an attacker with access to this process could use to reach
-any other user's data.
+`entrypoints/http/httpServer.ts`. This process has no business logic of its own: no
+permission checks, no decryption, nothing an attacker with access to this process could
+use to reach any other user's data.
 
 ## Usage
 

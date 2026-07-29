@@ -2,10 +2,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 /** Manual end-to-end smoke test: connects to the built gateway exactly as a real agent
- *  (Devin CLI, Claude Desktop) would, lists tools (Phase 2: expects exactly the two
- *  meta-tools, not the real filesystem tools directly), discovers a real tool via
- *  find_tool, then calls it via call_tool. See scripts/manual_test_phase2.ts for the
- *  multi-server/cross-permission version of this same idea (Claim A's demonstration). */
+ *  (Devin CLI, Claude Desktop) would, lists tools (expects the meta-tools, never the real
+ *  upstream tools directly), discovers a real tool via find_tool, then calls it via
+ *  call_tool. The multi-server/cross-permission version of this is covered by real,
+ *  automated tests now (see test/e2e/). */
 
 async function main(): Promise<void> {
   const client = new Client({ name: "manual-test-client", version: "0.0.1" });
