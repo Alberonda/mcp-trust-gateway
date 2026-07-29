@@ -52,9 +52,14 @@ export function loadHttpConfig(): HttpGatewayConfig {
 
   const allowedHostsRaw = optionalEnv("HTTP_ALLOWED_HOSTS");
 
+  // HTTP_PORT takes precedence, but fall back to the bare PORT env var most PaaS hosts
+  // (Render, Heroku, ...) inject and expect the app to bind to — without this, a
+  // deployment there would listen on the wrong port and never receive traffic.
+  const portSource = optionalEnv("HTTP_PORT") ?? optionalEnv("PORT");
+
   return Object.freeze({
     ...loadBaseConfig(),
-    port: optionalEnv("HTTP_PORT") ? parsePositiveInt("HTTP_PORT", requireEnv("HTTP_PORT")) : DEFAULT_PORT,
+    port: portSource ? parsePositiveInt("HTTP_PORT/PORT", portSource) : DEFAULT_PORT,
     host: optionalEnv("HTTP_HOST") ?? DEFAULT_HOST,
     allowedHosts: allowedHostsRaw ? allowedHostsRaw.split(",").map((h) => h.trim()) : undefined,
     tls: certPath && keyPath ? { certPath, keyPath } : undefined,
