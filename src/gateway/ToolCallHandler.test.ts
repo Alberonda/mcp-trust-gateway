@@ -59,7 +59,13 @@ class FakeUpstreamToolClient implements UpstreamToolClient {
   }
 }
 
-const testIdentity: Identity = { id: "identity-1", name: "test-identity", apiKeyHash: "irrelevant", isActive: true };
+const testIdentity: Identity = {
+  id: "identity-1",
+  userId: "user-1",
+  name: "test-identity",
+  apiKeyHash: "irrelevant",
+  isActive: true,
+};
 const testServer: UpstreamServer = { id: "server-1", name: "test-server", command: "irrelevant", credential: null };
 
 function buildHandler(options: {

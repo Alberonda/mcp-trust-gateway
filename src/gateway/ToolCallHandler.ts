@@ -43,14 +43,18 @@ export class ToolCallHandler {
    *  up exactly as strict as calling, never a way to enumerate tools you have no access
    *  to — just resolved with O(servers) queries instead of O(servers × tools). */
   async getAllowedToolNames(): Promise<AllowedTools> {
-    return this.permissions.findAllowedToolNames(this.identity.id, this.upstreamServer.id);
+    return this.permissions.findAllowedToolNames(this.identity.userId, this.upstreamServer.id);
   }
 
   async callTool(toolName: string, args: unknown): Promise<ToolCallResult> {
     const startedAt = this.now();
     const redactedParams = redact(args ?? {});
 
-    const allowed = await this.permissions.isCallAllowed(this.identity.id, this.upstreamServer.id, toolName);
+    // Permission checks operate on userId — every identity (API key/session) belonging
+    // to the same user shares the same grants. audit_log below still records this.identity.id,
+    // not userId, since knowing *which specific credential* made a call is more forensically
+    // useful than only knowing which user it belonged to.
+    const allowed = await this.permissions.isCallAllowed(this.identity.userId, this.upstreamServer.id, toolName);
     if (!allowed) {
       return this.denyAndAudit(toolName, redactedParams, startedAt);
     }

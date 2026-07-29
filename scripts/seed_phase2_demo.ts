@@ -1,5 +1,5 @@
 import pg from "pg";
-import { generateApiKey } from "../src/security/apiKeys.js";
+import { provisionUserWithIdentity } from "./lib/provisionUser.js";
 
 /**
  * One-off seed for manually demonstrating Phase 2's Claim A (governance across multiple
@@ -32,38 +32,26 @@ async function main(): Promise<void> {
     ["sandbox-b", "npx -y @modelcontextprotocol/server-filesystem /tmp/mcp-test-sandbox-b"],
   );
 
-  const narrowKey = generateApiKey();
-  const {
-    rows: [narrowIdentity],
-  } = await client.query<{ id: string }>(`INSERT INTO identities (name, api_key_hash) VALUES ($1, $2) RETURNING id`, [
-    "narrow-agent",
-    narrowKey.hash,
-  ]);
-  await client.query(`INSERT INTO permissions (identity_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
-    narrowIdentity.id,
+  const narrow = await provisionUserWithIdentity(client, "narrow-agent");
+  await client.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
+    narrow.userId,
     serverA.id,
   ]);
 
-  const broadKey = generateApiKey();
-  const {
-    rows: [broadIdentity],
-  } = await client.query<{ id: string }>(`INSERT INTO identities (name, api_key_hash) VALUES ($1, $2) RETURNING id`, [
-    "broad-agent",
-    broadKey.hash,
-  ]);
-  await client.query(`INSERT INTO permissions (identity_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
-    broadIdentity.id,
+  const broad = await provisionUserWithIdentity(client, "broad-agent");
+  await client.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
+    broad.userId,
     serverA.id,
   ]);
-  await client.query(`INSERT INTO permissions (identity_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
-    broadIdentity.id,
+  await client.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
+    broad.userId,
     serverB.id,
   ]);
 
   await client.end();
 
-  console.log("narrow-agent (sandbox-a only):", narrowKey.plaintext);
-  console.log("broad-agent  (sandbox-a + b): ", broadKey.plaintext);
+  console.log("narrow-agent (sandbox-a only):", narrow.apiKey);
+  console.log("broad-agent  (sandbox-a + b): ", broad.apiKey);
 }
 
 main().catch((error) => {

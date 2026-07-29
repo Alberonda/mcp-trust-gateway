@@ -409,12 +409,41 @@ use — this is an additional entry point for team use.
   pooled-upstream-connections optimization explicitly deferred in the decisions above.
 
 ### Phase 3 (was Phase 2 — parity/hygiene, still worth doing, just not the differentiator)
-- [ ] Replace static API keys with short-lived session tokens (issued after some login step)
-      + rotation of the stored upstream credentials.
-- [ ] Per-user (not just per-API-key) permission granularity, groundwork for real multi-tenant
-      use.
-- [ ] A way to actually read the audit log comfortably (CLI query tool at minimum; a small
-      web view if it's worth it by then).
+
+**3a — per-user permissions: done, 2026-07-29.** Permissions now attach to a `user`, not an
+individual identity (API key/session) — one user can hold several identities that all
+automatically share the same grants, instead of every new key needing its own permission
+rows configured separately.
+- `migrations/002_users.sql`: new `users` table; `identities.user_id` (NOT NULL, backfilled
+  1:1 for pre-existing identities so nothing already granted was dropped);
+  `permissions.identity_id` → `permissions.user_id` (column rename via
+  add-backfill-drop, unique constraint updated to match).
+- Real gap found and fixed as a side effect: `scripts/migrate.ts` had no
+  migration-tracking table (fine with exactly one migration; broke the moment there were
+  two — "relation already exists"). Fixed with a standard `schema_migrations` table,
+  each migration applied in its own transaction.
+- `db/types.ts`: `Identity` gained `userId`; new `User` type. `db/UserRepository.ts`
+  (new). `db/PermissionRepository.ts`: every method's `identityId` parameter is now
+  `userId` — a genuine semantic change, not a rename for its own sake.
+- `ToolCallHandler` checks permissions via `identity.userId`, but still *audits* via
+  `identity.id` — deliberately kept separate: knowing which specific credential made a
+  call is more forensically useful than only knowing which user it belonged to.
+- **Verified against real Postgres, not just migrated schema**: provisioned a brand-new
+  API key for the existing `broad-agent` user with zero permission rows of its own, and
+  confirmed over a real stdio connection that it immediately saw the same servers
+  (`sandbox-a` + `sandbox-b`) as `broad-agent`'s original key — proving shared grants
+  actually work end to end, not just at the schema level. New integration test covers the
+  same case (`PermissionRepository.test.ts`: "two identities belonging to the same user
+  share that user's grants").
+- 70 tests total (49 unit + 21 integration) after this sub-phase, all green.
+
+- [ ] **3b** — session tokens: replace static API keys with short-lived tokens issued via
+      a login step (HTTP mode), reducing how often the long-lived credential itself is
+      transmitted.
+- [ ] **3c** — rotation of stored upstream credentials (re-encrypt in place without
+      changing the server's id, so existing permission grants don't need to move).
+- [ ] **3d** — a way to actually read the audit log comfortably (CLI query tool at
+      minimum; a small web view if it's worth it by then).
 
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB

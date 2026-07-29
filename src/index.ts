@@ -47,7 +47,7 @@ async function main(): Promise<void> {
     throw new Error("GATEWAY_API_KEY does not match any active identity.");
   }
 
-  const accessibleServerIds = await permissions.findAccessibleServerIds(identity.id);
+  const accessibleServerIds = await permissions.findAccessibleServerIds(identity.userId);
   const accessibleServers = await upstreamServers.findManyByIds(accessibleServerIds);
   if (accessibleServers.length === 0) {
     throw new Error(`Identity "${identity.name}" has no permission grants on any upstream server.`);

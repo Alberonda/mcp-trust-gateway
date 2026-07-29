@@ -19,7 +19,7 @@ class FakePermissionRepository implements PermissionRepository {
   /** allowedTools maps serverId -> set of tool names allowed (or "*" for every tool). */
   constructor(private readonly allowedTools: Record<string, Set<string> | "*">) {}
 
-  async isCallAllowed(_identityId: string, serverId: string, toolName: string): Promise<boolean> {
+  async isCallAllowed(_userId: string, serverId: string, toolName: string): Promise<boolean> {
     const allowed = this.allowedTools[serverId];
     if (!allowed) return false;
     return allowed === "*" || allowed.has(toolName);
@@ -29,7 +29,7 @@ class FakePermissionRepository implements PermissionRepository {
     return Object.keys(this.allowedTools);
   }
 
-  async findAllowedToolNames(_identityId: string, serverId: string): Promise<AllowedTools> {
+  async findAllowedToolNames(_userId: string, serverId: string): Promise<AllowedTools> {
     const allowed = this.allowedTools[serverId];
     if (!allowed) return new Set();
     return allowed === "*" ? "all" : allowed;
@@ -55,7 +55,13 @@ class FakeUpstreamToolClient implements UpstreamToolClient {
   }
 }
 
-const identity: Identity = { id: "identity-1", name: "test-identity", apiKeyHash: "irrelevant", isActive: true };
+const identity: Identity = {
+  id: "identity-1",
+  userId: "user-1",
+  name: "test-identity",
+  apiKeyHash: "irrelevant",
+  isActive: true,
+};
 
 function server(name: string): UpstreamServer {
   return { id: `server-${name}`, name, command: "irrelevant", credential: null };
