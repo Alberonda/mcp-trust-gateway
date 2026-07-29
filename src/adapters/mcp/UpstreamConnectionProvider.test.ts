@@ -32,7 +32,7 @@ test("connect() never exposes the gateway process's own secrets to a spawned ups
   try {
     const vault = new AesGcmCredentialVault(Buffer.alloc(32, 1));
     const provider = new PerSessionUpstreamConnectionProvider(vault);
-    const server: UpstreamServer = { id: "test-server", name: "echo-env-test", command: "node", args: [FIXTURE_PATH] };
+    const server: UpstreamServer = { id: "test-server", name: "echo-env-test", command: "node", args: [FIXTURE_PATH], requiresRelay: false };
     const credential = vault.encrypt(JSON.stringify({ FAKE_UPSTREAM_TOKEN: "legitimate-value" }));
 
     const { client, close } = await provider.connect(server, credential);

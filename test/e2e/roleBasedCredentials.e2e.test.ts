@@ -113,6 +113,7 @@ async function teardownFixture(fixture: TestFixture): Promise<void> {
   await fixture.db.query(`DELETE FROM roles WHERE name LIKE $1`, [`e2e-%-${fixture.suffix}`]);
   await fixture.db.query(`DELETE FROM users WHERE name LIKE $1`, [`e2e-%-${fixture.suffix}`]);
   await fixture.db.query(`DELETE FROM upstream_servers WHERE name LIKE $1`, [`%-${fixture.suffix}`]);
+  await fixture.db.query(`DELETE FROM audit_log WHERE server_name LIKE $1`, [`%-${fixture.suffix}`]);
   await fixture.db.end();
 }
 

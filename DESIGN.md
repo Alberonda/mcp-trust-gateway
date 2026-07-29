@@ -1066,6 +1066,88 @@ permission-check/credential-decrypt/audit-write round trip now goes to Neon.
   Keychain-reading wrapper, personal-sandbox) — cosmetically misleading, not a functional
   bug (they connect and work fine regardless of that label).
 
+### Relay agent — done, 2026-07-29
+
+Builds the piece the "Real production data consolidated onto Neon" section above named
+as the only real path to ever making HTTP mode useful for jira/sonarqube/jenkins: a
+process that runs on a machine with actual network access to an internal service, taking
+orders from the gateway instead of deciding anything itself.
+
+**This is the payoff of the hexagonal reorganization done the same day.** The relay agent
+is an entirely new *adapter* — `adapters/relay/RelayUpstreamConnectionProvider.ts` — for
+the *existing* `UpstreamConnectionProvider` port. Every piece of domain code
+(`ToolCallHandler`, `ToolDiscoveryRouter`, `connectAccessibleServers.ts`, both composition
+roots) needed **zero changes** to support it; they already only depend on the port, never
+on `PerSessionUpstreamConnectionProvider` directly. `RoutingUpstreamConnectionProvider`
+picks which of the two adapters handles a given server based on a new
+`upstream_servers.requires_relay` column (`migrations/008_relay_agents.sql`).
+
+**Not "another MCP"**, on purpose — see the conversation that led here: MCP's own
+client/server relationship is always client-initiated (find_tool/call_tool, tools/list),
+but here the *gateway* needs to initiate ("execute this, now") toward the agent. That
+inversion doesn't fit MCP's request/response shape, so `ports/RelayAgentRegistry.ts`
+defines a small protocol of its own instead: `connect`/`listTools`/`callTool`/`close`
+requests, each correlated to a response by a `requestId`, sent over a WebSocket the agent
+opens *outbound* to the gateway (so nothing needs an inbound port open on the agent's
+machine or network).
+
+- `ports/RelayAgentRegistry.ts` — the protocol types, plus the interface: "is an agent
+  connected, and can I send it a request and get its matching response."
+- `adapters/relay/InMemoryRelayAgentRegistry.ts` — holds one connected agent at a time
+  (a real deployment might want several, one per network the gateway can't reach itself —
+  not built; this is the smallest version that's still genuinely useful). Matches
+  requests to responses by `requestId`, times out a dispatch after 30s, rejects every
+  pending dispatch if the agent disconnects mid-request instead of hanging forever.
+- `adapters/relay/RelayUpstreamConnectionProvider.ts` — decrypts the credential exactly
+  like `PerSessionUpstreamConnectionProvider` does, then dispatches instead of spawning
+  directly. The agent only ever receives the already-decrypted env for one active
+  connection — never the ciphertext, never the master key, never Postgres access.
+- `adapters/relay/RoutingUpstreamConnectionProvider.ts` — picks local vs. relay per
+  server, so nothing above it needs to know the distinction exists.
+- `entrypoints/http/httpServer.ts` — a new `/agent` WebSocket endpoint (`noServer: true`,
+  authenticated the same way any other request is, via a real API key through
+  `resolveIdentityFromAuthHeader`, *before* completing the handshake — a relay agent is
+  just a client holding a real, revocable credential, not a separate auth scheme).
+- **`relay-agent/`** (new top-level package, sibling to `bridge/`, not part of the main
+  npm workspace or build): the actual process that runs on the operator's own machine.
+  Connects out to `/agent`, and for each `connect` request spawns a real MCP server
+  subprocess using the same allowlist-based env (`getDefaultEnvironment()` merged with
+  only the decrypted env it was sent — never its own `process.env`, which holds
+  `GATEWAY_API_KEY`) as `adapters/mcp/UpstreamConnectionProvider.ts` already does. Holds
+  exactly one secret at rest: its own `GATEWAY_API_KEY`. Never the database URL, never the
+  master encryption key, never any OTHER server's credential — the same trust model
+  `bridge/` already established, applied to execution instead of request-forwarding.
+- **Verified for real, not just typechecked**: ran the actual built `httpServer.js` and
+  the actual built `relay-agent/dist/index.js` as two real local processes, registered a
+  real server flagged `requires_relay = true`, and drove a real `find_tool`/`call_tool`
+  round trip through both. Confirmed which process's log actually printed the subprocess
+  startup line (`... running on stdio`) — it was the agent's, never the gateway's — before
+  writing this up as `test/e2e/relayAgent.e2e.test.ts`, an automated version of the same
+  check that spawns both real processes for every CI run.
+- **A real bug found and fixed while writing that e2e test**: killing the two spawned
+  child processes with a fire-and-forget `.kill()` in the test's cleanup left the test
+  process itself hanging indefinitely after passing — Node's process doesn't exit while a
+  child's stdio pipes are still open, and `.kill()` (SIGTERM) doesn't guarantee the child
+  actually exits promptly. Fixed with a `killAndWait()` helper: SIGKILL (this is test
+  cleanup, not a graceful production shutdown — a leftover process from a previous run is
+  worse than an impolite kill) plus actually awaiting the child's `exit` event before the
+  test's `finally` block returns.
+- **A second real bug found the same way**: `audit_log.identity_id` uses `ON DELETE SET
+  NULL`, not `CASCADE` — deleting a test run's throwaway users/roles/servers left their
+  audit_log rows behind permanently (just with `identity_id` nulled out), which corrupted
+  an *unrelated* integration test's assumption of a clean table the next time both suites
+  ran against the same `TEST_DATABASE_URL`. Every e2e test's cleanup now also deletes its
+  own `audit_log` rows by `server_name` pattern.
+- `npm run test:e2e` now also builds `relay-agent/` first (`npm --prefix relay-agent run
+  build`); CI (`.github/workflows/ci.yml`) installs its dependencies the same way
+  (`npm --prefix relay-agent ci`) before that step.
+- 156 tests total (101 unit + 51 integration + 4 e2e), all green.
+- **Not yet done**: only one connected agent is supported at a time; no admin tooling to
+  see which servers currently have a live agent versus none; the agent has no automatic
+  credential-rotation or health-reporting story beyond "the WebSocket is still open."
+  Real, useful next steps if this gets used for more than one internal service — not
+  blocking for the one it was built to unblock.
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no

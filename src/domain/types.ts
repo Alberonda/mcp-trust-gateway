@@ -55,4 +55,9 @@ export interface UpstreamServer {
   readonly name: string;
   readonly command: string;
   readonly args: readonly string[];
+  /** True if this server can only be reached from inside a specific network this gateway
+   *  process may not itself be running in (see migrations/008_relay_agents.sql) — the
+   *  composition root must use a relay-based UpstreamConnectionProvider for it instead of
+   *  spawning the subprocess itself. */
+  readonly requiresRelay: boolean;
 }

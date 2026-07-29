@@ -100,6 +100,7 @@ test(
       await db.query(`DELETE FROM roles WHERE name LIKE $1`, [`e2e-iso-%-${suffix}`]);
       await db.query(`DELETE FROM users WHERE name LIKE $1`, [`e2e-iso-%-${suffix}`]);
       await db.query(`DELETE FROM upstream_servers WHERE name LIKE $1`, [`%-${suffix}`]);
+      await db.query(`DELETE FROM audit_log WHERE server_name LIKE $1`, [`%-${suffix}`]);
       await db.end();
     }
   },

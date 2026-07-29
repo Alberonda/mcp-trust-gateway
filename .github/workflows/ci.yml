@@ -46,6 +46,10 @@ jobs:
 
       - run: npm ci
 
+      # relay-agent/ is a genuinely separate package (own dependencies, own build) -- see
+      # DESIGN.md's "Relay agent" section for why it's never bundled into the main package.
+      - run: npm --prefix relay-agent ci
+
       - name: Create the dedicated integration-test database
         run: PGPASSWORD=gateway_ci_password psql -h localhost -U gateway -d postgres -c "CREATE DATABASE mcp_trust_gateway_test;"
 

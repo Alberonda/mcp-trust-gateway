@@ -4,6 +4,7 @@ import * as http from "node:http";
 import * as https from "node:https";
 
 import type pg from "pg";
+import { WebSocketServer } from "ws";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
@@ -40,6 +41,9 @@ import { PerSessionUpstreamConnectionProvider } from "../../adapters/mcp/Upstrea
 import type { ConnectedUpstream, UpstreamConnectionProvider } from "../../ports/UpstreamConnectionProvider.js";
 import { AesGcmCredentialVault } from "../../adapters/security/CredentialVault.js";
 import type { CredentialVault } from "../../ports/CredentialVault.js";
+import { InMemoryRelayAgentRegistry } from "../../adapters/relay/InMemoryRelayAgentRegistry.js";
+import { RelayUpstreamConnectionProvider } from "../../adapters/relay/RelayUpstreamConnectionProvider.js";
+import { RoutingUpstreamConnectionProvider } from "../../adapters/relay/RoutingUpstreamConnectionProvider.js";
 import { resolveIdentityFromAuthHeader, resolveIdentityFromSessionToken } from "./auth.js";
 import { HttpStatusError } from "./HttpStatusError.js";
 import type { HttpGatewayConfig } from "./httpConfig.js";
@@ -255,10 +259,19 @@ function safely(handler: (req: Request, res: Response) => Promise<void>) {
   };
 }
 
-function buildDependencies(config: HttpGatewayConfig): Dependencies {
+/** Exposed alongside Dependencies (not part of it) because it needs one extra method
+ *  (registerAgent) beyond the RelayAgentRegistry port that RoutingUpstreamConnectionProvider
+ *  depends on — only main()'s WebSocket upgrade handling needs that extra method, not any
+ *  domain code. */
+function buildDependencies(config: HttpGatewayConfig): { deps: Dependencies; relayAgentRegistry: InMemoryRelayAgentRegistry } {
   const pool = createPool(config.databaseUrl);
   const vault = new AesGcmCredentialVault(config.encryptionKey);
-  return {
+  const relayAgentRegistry = new InMemoryRelayAgentRegistry();
+  const connectionProvider = new RoutingUpstreamConnectionProvider(
+    new PerSessionUpstreamConnectionProvider(vault),
+    new RelayUpstreamConnectionProvider(relayAgentRegistry, vault),
+  );
+  const deps: Dependencies = {
     pool,
     identities: new PostgresIdentityRepository(pool),
     permissions: new PostgresPermissionRepository(pool),
@@ -269,15 +282,45 @@ function buildDependencies(config: HttpGatewayConfig): Dependencies {
     vault,
     auditLog: new SafeAuditLogRepository(new PostgresAuditLogRepository(pool)),
     sessions: new PostgresSessionRepository(pool),
-    connectionProvider: new PerSessionUpstreamConnectionProvider(vault),
+    connectionProvider,
     rateLimiter: new InMemoryTokenBucketRateLimiter(config.rateLimit.maxTokens, config.rateLimit.refillPerSecond / 1000),
     sessionTtlMinutes: config.sessionTtlMinutes,
   };
+  return { deps, relayAgentRegistry };
+}
+
+/** Verifies the relay agent's Authorization header the same way any other request does
+ *  (see auth.ts) — a relay agent is just a client holding a real API key, not a separate
+ *  auth scheme. Rejects and closes the socket if the header is missing or the key is
+ *  unknown/inactive, before ever calling registerAgent. */
+async function handleAgentUpgrade(
+  req: http.IncomingMessage,
+  socket: import("node:stream").Duplex,
+  head: Buffer,
+  wss: WebSocketServer,
+  deps: Dependencies,
+  relayAgentRegistry: InMemoryRelayAgentRegistry,
+): Promise<void> {
+  const authResult = await resolveIdentityFromAuthHeader(req.headers.authorization, deps.identities);
+  if ("error" in authResult) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    console.log(`[mcp-trust-gateway:http] Relay agent connected (identity "${authResult.identity.name}").`);
+    relayAgentRegistry.registerAgent({
+      send: (data) => ws.send(data),
+      onMessage: (handler) => ws.on("message", (data) => handler(data.toString())),
+      onClose: (handler) => ws.on("close", handler),
+    });
+  });
 }
 
 async function main(): Promise<void> {
   const config = loadHttpConfig();
-  const deps = buildDependencies(config);
+  const { deps, relayAgentRegistry } = buildDependencies(config);
 
   const app = createMcpExpressApp({ host: config.host, allowedHosts: config.allowedHosts as string[] | undefined });
   app.get("/health", safely((req, res) => handleHealth(req, res, deps)));
@@ -290,6 +333,18 @@ async function main(): Promise<void> {
   const server = config.tls
     ? https.createServer({ cert: readFileSync(config.tls.certPath), key: readFileSync(config.tls.keyPath) }, app)
     : http.createServer(app);
+
+  // noServer: true — we own the upgrade ourselves (see handleAgentUpgrade) so we can
+  // authenticate BEFORE completing the handshake, and so /mcp's own traffic (which never
+  // upgrades) is unaffected.
+  const agentWss = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (req, socket, head) => {
+    if (req.url === "/agent") {
+      void handleAgentUpgrade(req, socket, head, agentWss, deps, relayAgentRegistry);
+    } else {
+      socket.destroy();
+    }
+  });
 
   if (!config.tls) {
     console.warn(

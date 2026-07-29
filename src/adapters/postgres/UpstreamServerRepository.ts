@@ -7,12 +7,13 @@ interface UpstreamServerRow {
   name: string;
   command: string;
   args: string[];
+  requiresRelay: boolean;
 }
 
-const UPSTREAM_SERVER_COLUMNS = `id, name, command, args`;
+const UPSTREAM_SERVER_COLUMNS = `id, name, command, args, requires_relay AS "requiresRelay"`;
 
 function mapRow(row: UpstreamServerRow): UpstreamServer {
-  return { id: row.id, name: row.name, command: row.command, args: row.args };
+  return { id: row.id, name: row.name, command: row.command, args: row.args, requiresRelay: row.requiresRelay };
 }
 
 export class PostgresUpstreamServerRepository implements UpstreamServerRepository {
@@ -42,10 +43,10 @@ export class PostgresUpstreamServerRepository implements UpstreamServerRepositor
 
   async create(server: NewUpstreamServer): Promise<UpstreamServer> {
     const { rows } = await this.db.query<UpstreamServerRow>(
-      `INSERT INTO upstream_servers (name, command, args)
-       VALUES ($1, $2, $3)
+      `INSERT INTO upstream_servers (name, command, args, requires_relay)
+       VALUES ($1, $2, $3, $4)
        RETURNING ${UPSTREAM_SERVER_COLUMNS}`,
-      [server.name, server.command, JSON.stringify(server.args)],
+      [server.name, server.command, JSON.stringify(server.args), server.requiresRelay ?? false],
     );
     return mapRow(rows[0]);
   }

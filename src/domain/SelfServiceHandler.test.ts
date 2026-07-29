@@ -50,7 +50,7 @@ class FakeUserCredentialRepository implements UserCredentialRepository {
   async remove(): Promise<void> {}
 }
 
-const server = (id: string, name: string): UpstreamServer => ({ id, name, command: "irrelevant", args: [] });
+const server = (id: string, name: string): UpstreamServer => ({ id, name, command: "irrelevant", args: [], requiresRelay: false });
 const vault = new AesGcmCredentialVault(Buffer.alloc(32, 1));
 
 test("listServices marks a server the user has no permission for as not_permitted", async () => {
