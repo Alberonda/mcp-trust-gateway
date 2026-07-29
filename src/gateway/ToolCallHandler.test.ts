@@ -5,6 +5,7 @@ import type { AuditEntry, AuditLogRepository, StoredAuditEntry } from "../db/Aud
 import type { AllowedTools, PermissionRepository } from "../db/PermissionRepository.js";
 import type { Identity, UpstreamServer } from "../db/types.js";
 import { REDACTED_PLACEHOLDER } from "../constants.js";
+import { SafeAuditLogRepository } from "../db/SafeAuditLogRepository.js";
 import { ToolCallHandler } from "./ToolCallHandler.js";
 import type { ToolCallResult, UpstreamToolClient } from "./UpstreamToolClient.js";
 
@@ -158,4 +159,31 @@ test("duration_ms reflects the injected clock, not wall-clock timing", async () 
   await handler.callTool("read_file", {});
 
   assert.equal(auditLog.entries[0].durationMs, 250);
+});
+
+// Regression test for the bug documented in DESIGN.md's "Open architectural gaps" section:
+// a successful upstream call must never be reported as a failure just because writing its
+// audit entry afterwards failed. Wrapping the audit log in SafeAuditLogRepository (the
+// actual fix) is what makes this pass — without it, this test fails exactly the way the
+// real bug did: the successful result never reaches the caller.
+test("a successful call still returns its real result even if writing the audit entry fails", async () => {
+  const throwingAuditLog: AuditLogRepository = {
+    write: async () => {
+      throw new Error("Postgres is unreachable");
+    },
+    findRecentByIdentity: async () => [],
+  };
+  const safeAuditLog = new SafeAuditLogRepository(throwingAuditLog, () => {});
+  const upstreamClient = new FakeUpstreamToolClient({ content: [{ type: "text", text: "the real result" }] });
+  const handler = new ToolCallHandler(
+    testIdentity,
+    testServer,
+    new FakePermissionRepository(true),
+    safeAuditLog,
+    upstreamClient,
+  );
+
+  const result = await handler.callTool("read_file", {});
+
+  assert.deepEqual(result, { content: [{ type: "text", text: "the real result" }] });
 });
