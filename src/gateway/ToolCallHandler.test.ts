@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuditStatus } from "../constants.js";
-import type { AuditEntry, AuditLogRepository } from "../db/AuditLogRepository.js";
+import type { AuditEntry, AuditLogRepository, StoredAuditEntry } from "../db/AuditLogRepository.js";
 import type { PermissionRepository } from "../db/PermissionRepository.js";
 import type { Identity, UpstreamServer } from "../db/types.js";
 import { REDACTED_PLACEHOLDER } from "../constants.js";
@@ -24,6 +24,12 @@ class FakeAuditLogRepository implements AuditLogRepository {
   readonly entries: AuditEntry[] = [];
   async write(entry: AuditEntry): Promise<void> {
     this.entries.push(entry);
+  }
+  async findRecentByIdentity(identityId: string, limit: number): Promise<StoredAuditEntry[]> {
+    return this.entries
+      .filter((entry) => entry.identityId === identityId)
+      .slice(0, limit)
+      .map((entry, index) => ({ ...entry, id: index, createdAt: new Date() }));
   }
 }
 

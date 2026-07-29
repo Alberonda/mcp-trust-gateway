@@ -1,4 +1,4 @@
-import type pg from "pg";
+import type { Queryable } from "./Queryable.js";
 
 export interface PermissionRepository {
   /** True if identityId may call toolName on serverId — either via an exact-match grant
@@ -7,10 +7,10 @@ export interface PermissionRepository {
 }
 
 export class PostgresPermissionRepository implements PermissionRepository {
-  constructor(private readonly pool: pg.Pool) {}
+  constructor(private readonly db: Queryable) {}
 
   async isCallAllowed(identityId: string, serverId: string, toolName: string): Promise<boolean> {
-    const { rows } = await this.pool.query(
+    const { rows } = await this.db.query(
       `SELECT 1 FROM permissions
        WHERE identity_id = $1 AND server_id = $2 AND (tool_name = $3 OR tool_name IS NULL)
        LIMIT 1`,

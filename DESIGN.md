@@ -136,10 +136,28 @@ excluded from the production build (`tsconfig.json`'s `exclude`).
   policy (allow/deny/error paths, redaction, audit status, that a denied call never reaches
   upstream) without a database or a subprocess. This is the direct payoff of the
   dependency-inversion refactor above.
-- Not yet covered: the Postgres repository implementations themselves (`Postgres*Repository`
-  classes) and `index.ts`'s wiring — these need a real database, so they're integration-level
-  tests rather than unit tests. Worth adding if/when this project gets a CI pipeline; today
-  they're still covered by the manual smoke test (`scripts/manual_test_client.ts`).
+- `test/integration/*.test.ts` (`npm run test:integration`) — the four `Postgres*Repository`
+  classes against a real, migrated Postgres. Each test runs inside a transaction that's
+  always rolled back (`test/integration/setupDatabase.ts`'s `withTransaction`), so tests
+  can freely INSERT fixtures without leaving data behind or needing manual cleanup. This
+  required loosening the repositories' constructors from `pg.Pool` to a minimal `Queryable`
+  interface (`db/Queryable.ts`) — satisfied structurally by both `pg.Pool` and a
+  transactional `pg.PoolClient`, so tests can hand in a client mid-transaction with zero
+  changes to the repository code.
+  - **Runs against `TEST_DATABASE_URL`, a separate database from `DATABASE_URL`** — running
+    these against the same database used for manual smoke-testing
+    (`scripts/seed_test_setup.ts`) caused real unique-constraint collisions the first time
+    this was tried. Needs its own migrated database; see README.md.
+  - **Caught a real bug**, not a hypothetical one: `AuditLogRepository.findRecentByIdentity`
+    ordered by `created_at DESC` alone. Postgres's `now()` is fixed for the whole duration
+    of a transaction, so several rows written inside one transaction (exactly what a test
+    inserting three audit entries does) all get the identical `created_at`, and the order
+    between ties is unspecified. Fixed by adding `id DESC` as a tiebreaker. The unit test
+    suite's in-memory fake couldn't have caught this — it doesn't model transactional
+    timestamp semantics — which is the whole point of also having integration tests.
+- `index.ts`'s wiring itself is still only covered by the manual smoke test
+  (`scripts/manual_test_client.ts`), not automated — it's mostly composition (build real
+  objects, connect a transport), lower-value to unit-test than the logic it wires together.
 
 ## Phased plan
 
@@ -155,10 +173,10 @@ excluded from the production build (`tsconfig.json`'s `exclude`).
       denies a previously-working call.
 - [x] Every call (allowed or rejected) writes a structured audit log row, with credential/
       secret values redacted before storage.
-- [x] Real automated test suite (`npm test`, `node:test`) — see "Testing" above. 22 unit
-      tests covering crypto, redaction, and the full ToolCallHandler policy with fakes.
-      Postgres-backed repository classes and `index.ts` itself are still only covered by
-      the manual smoke test, not automated — acceptable for now, revisit with CI.
+- [x] Real automated test suite — see "Testing" above. 22 unit tests (`npm test`) covering
+      crypto, redaction, and the full ToolCallHandler policy with fakes, plus 13 integration
+      tests (`npm run test:integration`) covering every Postgres repository against a real
+      database. `index.ts` itself is still only covered by the manual smoke test.
 
 ### Phase 2
 - [ ] Replace static API keys with short-lived session tokens (issued after some login step)

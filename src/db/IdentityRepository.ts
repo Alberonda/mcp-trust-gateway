@@ -1,4 +1,4 @@
-import type pg from "pg";
+import type { Queryable } from "./Queryable.js";
 import type { Identity } from "./types.js";
 
 /** ToolCallHandler depends on this interface, never on Postgres directly — that's what
@@ -8,10 +8,10 @@ export interface IdentityRepository {
 }
 
 export class PostgresIdentityRepository implements IdentityRepository {
-  constructor(private readonly pool: pg.Pool) {}
+  constructor(private readonly db: Queryable) {}
 
   async findByApiKeyHash(hash: string): Promise<Identity | null> {
-    const { rows } = await this.pool.query<Identity>(
+    const { rows } = await this.db.query<Identity>(
       `SELECT id, name, api_key_hash AS "apiKeyHash", is_active AS "isActive"
        FROM identities WHERE api_key_hash = $1 AND is_active = true`,
       [hash],
