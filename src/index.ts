@@ -8,9 +8,13 @@ import { PostgresAuditLogRepository } from "./db/AuditLogRepository.js";
 import { PostgresIdentityRepository } from "./db/IdentityRepository.js";
 import { PostgresPermissionRepository } from "./db/PermissionRepository.js";
 import { createPool } from "./db/pool.js";
+import { PostgresRoleRepository } from "./db/RoleRepository.js";
 import { SafeAuditLogRepository } from "./db/SafeAuditLogRepository.js";
 import { PostgresUpstreamServerRepository } from "./db/UpstreamServerRepository.js";
 import { PostgresUserCredentialRepository } from "./db/UserCredentialRepository.js";
+import { PostgresUserRepository } from "./db/UserRepository.js";
+import { AdminToolHandler } from "./gateway/AdminToolHandler.js";
+import { SelfServiceHandler } from "./gateway/SelfServiceHandler.js";
 import { ToolCallHandler } from "./gateway/ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "./gateway/ToolDiscoveryRouter.js";
 import { PerSessionUpstreamConnectionProvider } from "./gateway/UpstreamConnectionProvider.js";
@@ -38,10 +42,13 @@ async function main(): Promise<void> {
   const identities = new PostgresIdentityRepository(pool);
   const upstreamServers = new PostgresUpstreamServerRepository(pool);
   const permissions = new PostgresPermissionRepository(pool);
+  const roles = new PostgresRoleRepository(pool);
+  const users = new PostgresUserRepository(pool);
   // Wrapped so a transient audit-write failure can never surface as if a real, possibly
   // already-completed tool call had failed (see SafeAuditLogRepository's docstring).
   const auditLog = new SafeAuditLogRepository(new PostgresAuditLogRepository(pool));
-  const connectionProvider = new PerSessionUpstreamConnectionProvider(new CredentialVault(config.encryptionKey));
+  const vault = new CredentialVault(config.encryptionKey);
+  const connectionProvider = new PerSessionUpstreamConnectionProvider(vault);
   const userCredentials = new PostgresUserCredentialRepository(pool);
 
   const identity = await identities.findByApiKeyHash(hashApiKey(config.gatewayApiKey));
@@ -49,11 +56,12 @@ async function main(): Promise<void> {
     throw new Error("GATEWAY_API_KEY does not match any active identity.");
   }
 
+  // Deliberately no "throw if this identity has zero permission grants" check anymore —
+  // a brand-new user with no access yet still needs to be able to connect and use
+  // list_services/register_my_credential to see what exists and configure themselves
+  // once an admin grants their role access (see SelfServiceHandler's docstring).
   const accessibleServerIds = await permissions.findAccessibleServerIds(identity.userId);
   const accessibleServers = await upstreamServers.findManyByIds(accessibleServerIds);
-  if (accessibleServers.length === 0) {
-    throw new Error(`Identity "${identity.name}" has no permission grants on any upstream server.`);
-  }
 
   const handlers = await Promise.all(
     accessibleServers.map(async (server) => {
@@ -65,7 +73,11 @@ async function main(): Promise<void> {
       return new ToolCallHandler(identity, server, permissions, auditLog, client);
     }),
   );
-  const router = new ToolDiscoveryRouter(handlers, identity, auditLog);
+  const selfService = new SelfServiceHandler(identity.userId, permissions, upstreamServers, userCredentials, vault);
+  const adminHandler = (await roles.isUserAdmin(identity.userId))
+    ? new AdminToolHandler(roles, users, upstreamServers, userCredentials)
+    : undefined;
+  const router = new ToolDiscoveryRouter(handlers, identity, auditLog, selfService, adminHandler);
 
   // ToolDiscoveryRouter/ToolCallHandler intentionally return the plain, minimal shapes
   // they need (see gateway/UpstreamToolClient.ts) rather than depending on the SDK's much

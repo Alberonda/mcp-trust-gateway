@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PostgresPermissionRepository } from "../../src/db/PermissionRepository.js";
-import { seedServer, seedUserAndIdentity } from "./testFixtures.js";
+import { grantPermission, seedServer, seedUserAndIdentity } from "./testFixtures.js";
 import { withTransaction } from "./setupDatabase.js";
 
 test(
@@ -9,10 +9,7 @@ test(
   withTransaction(async ({ db }) => {
     const { userId } = await seedUserAndIdentity(db, "agent");
     const serverId = await seedServer(db, "server");
-    await db.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, 'read_file')`, [
-      userId,
-      serverId,
-    ]);
+    await grantPermission(db, userId, serverId, "read_file");
 
     const repo = new PostgresPermissionRepository(db);
 
@@ -26,10 +23,7 @@ test(
   withTransaction(async ({ db }) => {
     const { userId } = await seedUserAndIdentity(db, "agent");
     const serverId = await seedServer(db, "server");
-    await db.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
-      userId,
-      serverId,
-    ]);
+    await grantPermission(db, userId, serverId, null);
 
     const repo = new PostgresPermissionRepository(db);
 
@@ -56,10 +50,7 @@ test(
     const { userId } = await seedUserAndIdentity(db, "agent");
     const serverId = await seedServer(db, "server");
     const otherServerId = await seedServer(db, "other-server");
-    await db.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
-      userId,
-      otherServerId,
-    ]);
+    await grantPermission(db, userId, otherServerId, null);
 
     const allowed = await new PostgresPermissionRepository(db).isCallAllowed(userId, serverId, "read_file");
 
@@ -75,10 +66,7 @@ test(
     // seedUserAndIdentity always creates a fresh user.
     await db.query(`INSERT INTO identities (user_id, name, api_key_hash) VALUES ($1, 'ci-key', 'hash-ci')`, [userId]);
     const serverId = await seedServer(db, "server");
-    await db.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, 'read_file')`, [
-      userId,
-      serverId,
-    ]);
+    await grantPermission(db, userId, serverId, "read_file");
 
     // Both identities resolve to the same userId, so a single permission check against
     // that userId governs both — this is the entire point of the Phase 3 schema change.
@@ -89,20 +77,32 @@ test(
 );
 
 test(
+  "a user with two roles gets the union of both roles' grants",
+  withTransaction(async ({ db }) => {
+    const { userId } = await seedUserAndIdentity(db, "multi-role-agent");
+    const serverA = await seedServer(db, "a");
+    const serverB = await seedServer(db, "b");
+    // grantPermission creates a fresh role per call, so this user ends up holding two
+    // distinct roles, each granting access to a different server.
+    await grantPermission(db, userId, serverA, null);
+    await grantPermission(db, userId, serverB, null);
+
+    const repo = new PostgresPermissionRepository(db);
+
+    assert.equal(await repo.isCallAllowed(userId, serverA, "read_file"), true);
+    assert.equal(await repo.isCallAllowed(userId, serverB, "read_file"), true);
+  }),
+);
+
+test(
   "findAccessibleServerIds returns every distinct server this user has any grant on",
   withTransaction(async ({ db }) => {
     const { userId } = await seedUserAndIdentity(db, "agent");
     const serverA = await seedServer(db, "a");
     const serverB = await seedServer(db, "b");
     await seedServer(db, "c"); // deliberately not granted — must not appear below
-    await db.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, 'read_file')`, [
-      userId,
-      serverA,
-    ]);
-    await db.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
-      userId,
-      serverB,
-    ]);
+    await grantPermission(db, userId, serverA, "read_file");
+    await grantPermission(db, userId, serverB, null);
 
     const accessible = await new PostgresPermissionRepository(db).findAccessibleServerIds(userId);
 
@@ -126,14 +126,8 @@ test(
   withTransaction(async ({ db }) => {
     const { userId } = await seedUserAndIdentity(db, "agent");
     const serverId = await seedServer(db, "server");
-    await db.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, 'read_file')`, [
-      userId,
-      serverId,
-    ]);
-    await db.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
-      userId,
-      serverId,
-    ]);
+    await grantPermission(db, userId, serverId, "read_file");
+    await grantPermission(db, userId, serverId, null);
 
     const allowed = await new PostgresPermissionRepository(db).findAllowedToolNames(userId, serverId);
 
@@ -146,14 +140,8 @@ test(
   withTransaction(async ({ db }) => {
     const { userId } = await seedUserAndIdentity(db, "agent");
     const serverId = await seedServer(db, "server");
-    await db.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, 'read_file')`, [
-      userId,
-      serverId,
-    ]);
-    await db.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, 'list_directory')`, [
-      userId,
-      serverId,
-    ]);
+    await grantPermission(db, userId, serverId, "read_file");
+    await grantPermission(db, userId, serverId, "list_directory");
 
     const allowed = await new PostgresPermissionRepository(db).findAllowedToolNames(userId, serverId);
 

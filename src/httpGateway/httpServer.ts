@@ -19,6 +19,8 @@ import type { IdentityRepository } from "../db/IdentityRepository.js";
 import { PostgresPermissionRepository } from "../db/PermissionRepository.js";
 import type { PermissionRepository } from "../db/PermissionRepository.js";
 import { createPool } from "../db/pool.js";
+import { PostgresRoleRepository } from "../db/RoleRepository.js";
+import type { RoleRepository } from "../db/RoleRepository.js";
 import { SafeAuditLogRepository } from "../db/SafeAuditLogRepository.js";
 import { PostgresSessionRepository } from "../db/SessionRepository.js";
 import type { SessionRepository } from "../db/SessionRepository.js";
@@ -26,7 +28,11 @@ import { PostgresUpstreamServerRepository } from "../db/UpstreamServerRepository
 import type { UpstreamServerRepository } from "../db/UpstreamServerRepository.js";
 import { PostgresUserCredentialRepository } from "../db/UserCredentialRepository.js";
 import type { UserCredentialRepository } from "../db/UserCredentialRepository.js";
+import { PostgresUserRepository } from "../db/UserRepository.js";
+import type { UserRepository } from "../db/UserRepository.js";
 import type { Identity } from "../db/types.js";
+import { AdminToolHandler } from "../gateway/AdminToolHandler.js";
+import { SelfServiceHandler } from "../gateway/SelfServiceHandler.js";
 import { ToolCallHandler } from "../gateway/ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "../gateway/ToolDiscoveryRouter.js";
 import { PerSessionUpstreamConnectionProvider } from "../gateway/UpstreamConnectionProvider.js";
@@ -72,16 +78,20 @@ interface Dependencies {
   readonly sessions: SessionRepository;
   readonly connectionProvider: UpstreamConnectionProvider;
   readonly userCredentials: UserCredentialRepository;
+  readonly roles: RoleRepository;
+  readonly users: UserRepository;
+  readonly vault: CredentialVault;
   readonly rateLimiter: RateLimiter;
   readonly sessionTtlMinutes: number;
 }
 
 async function createMcpSession(identity: Identity, deps: Dependencies): Promise<McpSession> {
+  // Deliberately no "throw if this identity has zero permission grants" check anymore —
+  // a brand-new user with no access yet still needs to be able to connect and use
+  // list_services/register_my_credential to see what exists and configure themselves
+  // once an admin grants their role access (see SelfServiceHandler's docstring).
   const accessibleServerIds = await deps.permissions.findAccessibleServerIds(identity.userId);
   const accessibleServers = await deps.upstreamServers.findManyByIds(accessibleServerIds);
-  if (accessibleServers.length === 0) {
-    throw new HttpStatusError(403, `Identity "${identity.name}" has no permission grants on any upstream server.`);
-  }
 
   // This user's OWN credential for each server, or null — there is no shared default to
   // fall back to (see db/UserCredentialRepository.ts's docstring): a server row must
@@ -93,7 +103,11 @@ async function createMcpSession(identity: Identity, deps: Dependencies): Promise
   const handlers = connectedUpstreams.map(
     ({ client }, i) => new ToolCallHandler(identity, accessibleServers[i], deps.permissions, deps.auditLog, client),
   );
-  const router = new ToolDiscoveryRouter(handlers, identity, deps.auditLog);
+  const selfService = new SelfServiceHandler(identity.userId, deps.permissions, deps.upstreamServers, deps.userCredentials, deps.vault);
+  const adminHandler = (await deps.roles.isUserAdmin(identity.userId))
+    ? new AdminToolHandler(deps.roles, deps.users, deps.upstreamServers, deps.userCredentials)
+    : undefined;
+  const router = new ToolDiscoveryRouter(handlers, identity, deps.auditLog, selfService, adminHandler);
 
   const mcpServer = new Server({ name: "mcp-trust-gateway", version: "0.1.0" }, { capabilities: { tools: {} } });
   mcpServer.setRequestHandler(ListToolsRequestSchema, () => router.listMetaTools() as unknown as ServerResult);
@@ -243,15 +257,19 @@ function safely(handler: (req: Request, res: Response) => Promise<void>) {
 
 function buildDependencies(config: HttpGatewayConfig): Dependencies {
   const pool = createPool(config.databaseUrl);
+  const vault = new CredentialVault(config.encryptionKey);
   return {
     pool,
     identities: new PostgresIdentityRepository(pool),
     permissions: new PostgresPermissionRepository(pool),
     upstreamServers: new PostgresUpstreamServerRepository(pool),
     userCredentials: new PostgresUserCredentialRepository(pool),
+    roles: new PostgresRoleRepository(pool),
+    users: new PostgresUserRepository(pool),
+    vault,
     auditLog: new SafeAuditLogRepository(new PostgresAuditLogRepository(pool)),
     sessions: new PostgresSessionRepository(pool),
-    connectionProvider: new PerSessionUpstreamConnectionProvider(new CredentialVault(config.encryptionKey)),
+    connectionProvider: new PerSessionUpstreamConnectionProvider(vault),
     rateLimiter: new InMemoryTokenBucketRateLimiter(config.rateLimit.maxTokens, config.rateLimit.refillPerSecond / 1000),
     sessionTtlMinutes: config.sessionTtlMinutes,
   };
