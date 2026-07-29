@@ -367,6 +367,17 @@ Two real gaps surfaced by direct questioning, not found proactively:
       writes) — flagged in research as the hardest, most tool-specific problem; no
       general solution exists yet anywhere.
 
+### Backlog (not scheduled to a phase yet)
+- [ ] **Improve `find_tool`'s matching beyond plain substring search.** Today
+      `ToolDiscoveryRouter.findTool()` does a case-insensitive `.includes()` on the tool's
+      name/description — no synonyms, no semantic understanding (a query of "borrar" would
+      not match a tool named "delete_file"). Works reasonably today because agents tend to
+      search using terms close to MCP's English naming conventions, but it's not robust.
+      If it becomes a real problem: embeddings + similarity search (the same approach
+      RAGWire already uses) is the natural upgrade path, at the cost of adding an
+      embeddings-provider dependency to what's otherwise a deliberately lightweight gateway
+      — worth weighing carefully before adding, not a default yes.
+
 ## Status log
 
 - **2026-07-29 (later still)**: Phase 2 shipped and verified — see the Phase 2 section
