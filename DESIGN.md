@@ -104,24 +104,33 @@ isn't very interesting) is reordered ahead of the original Phase 2 items (sessio
 credential rotation). It's the actual differentiator; session-token maturity is closer to
 hygiene/parity with what competitors already have. See the renumbered phased plan below.
 
-## What this project actually is
+## What this project actually is (current shape, post Phase 3 — see README.md for the two
+## concrete ways to run it)
 
 **An MCP proxy that sits between any MCP client (Devin CLI, Claude Desktop, Cursor...) and
-real upstream MCP servers**, adding the trust/control plane those don't have:
+one or more real upstream MCP servers**, adding the trust/control plane those don't have,
+while exposing only two fixed meta-tools to the agent regardless of how many real servers
+are behind it:
 
 ```
 Agent (Devin CLI, Claude Desktop, Cursor...)
-        │  MCP, authenticated with a gateway-issued API key
+        │  MCP — stdio mode: GATEWAY_API_KEY directly (single process, single identity)
+        │        HTTP mode: POST /login with an API key, then Authorization: Bearer
+        │        <session token> on every /mcp request (see README.md)
         ▼
-┌───────────────────────────────────────┐
-│           MCP TRUST GATEWAY            │
-│  1. Verify API key → resolve identity  │
-│  2. Check permission (Postgres ACL)    │
-│  3. Decrypt the real upstream credential│
-│  4. Forward the call to the real server │
-│  5. Write a structured, redacted audit  │
-│     log entry (Postgres)                │
-└───────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                       MCP TRUST GATEWAY                        │
+│  1. Resolve identity → its user (permissions are per-user,     │
+│     shared by every identity/API key that user holds)          │
+│  2. Connect to every upstream server this user has any grant   │
+│     on (PermissionRepository.findAccessibleServerIds)          │
+│  3. Expose exactly two meta-tools to the agent: find_tool       │
+│     (search real tools across accessible servers, permission-   │
+│     filtered) and call_tool (route to the right server)         │
+│  4. Per call: check permission → decrypt the real server's      │
+│     credential → forward → write an audited, redacted log       │
+│     entry (failures in that last step never mask a real result) │
+└────────────────────────────────────────────────────────────────┘
         │
         ▼
 Real MCP servers (GitHub, a customer's own backend, Qdrant, ...)
@@ -137,45 +146,69 @@ real tools from day one.
 | Decision | Choice | Why |
 |---|---|---|
 | Language/runtime | **TypeScript / Node.js** | The gateway must speak MCP as both a server (facing the agent) and a client (facing real servers) simultaneously — the official TS SDK is the reference implementation for this proxy pattern, and most real-world MCP servers run as npm packages (easy to spawn as subprocesses from the same runtime). |
-| Initial scope | **Multi-identity from day 1, but not full login/session UI yet** | User explicitly wants multi-user + auth/encryption combined into this project, not deferred. Compromise to avoid over-building before anything works: v1 identities are static, hashed API keys per user/agent with a Postgres ACL — real login/session tokens land in Phase 2 (already planned regardless). |
+| Initial scope | **Multi-identity from day 1, but not full login/session UI yet** | User explicitly wants multi-user + auth/encryption combined into this project, not deferred. Compromise to avoid over-building before anything works: v1 identities are static, hashed API keys per user/agent with a Postgres ACL. Real login/session tokens landed later, in Phase 3b (HTTP mode's `/login`) — this row is intentionally left as the original plan, for history; see Phase 3b for what was actually built. |
 | Audit/credential storage | **PostgreSQL** (not SQLite) | Chosen explicitly by user — treat as a real service from day 1, not a personal single-file prototype. |
 | Encryption | AES-256 at the application layer for the credential vault (real upstream API keys), TLS everywhere in transit | Standard, well-understood approach; avoids relying on Postgres-specific extensions (pgcrypto) so the encryption logic is portable if the DB changes later. |
 
-## Architecture (post-refactor, 2026-07-29)
+## Architecture (current file layout — kept up to date as of Phase 3; if this ever
+## drifts from `src/`'s actual contents again, trust `src/` and fix this section, not the
+## other way around)
 
 The first working version had all the right behavior but the wrong shape for a project
 meant to grow: a single `main()` did config loading, DB queries, credential decryption,
 subprocess spawning, *and* the permission/audit business logic inline inside the MCP
 request handlers. That made the actual policy (the reason this project exists) untestable
-without a real Postgres and a real spawned subprocess. Refactored into:
+without a real Postgres and a real spawned subprocess. Refactored into, and grown since:
 
 ```
 src/
-  constants.ts         — every named value that would otherwise be a magic number/string
-  config.ts             — the only module allowed to read process.env; fails fast at startup
+  constants.ts           — every named value that would otherwise be a magic number/string
+  config.ts               — reads process.env for what BOTH entry points need
+                            (DATABASE_URL, GATEWAY_ENCRYPTION_KEY) + stdio-only GATEWAY_API_KEY
   security/
-    vault.ts             — AES-256-GCM for the credential vault (key injected, not read from env)
-    apiKeys.ts           — API key generation/hashing (separate concern from vault encryption)
+    vault.ts               — AES-256-GCM for the upstream credential vault
+    apiKeys.ts              — long-lived API key generation/hashing
+    sessionTokens.ts        — short-lived session token generation/hashing (Phase 3b) —
+                              same approach as apiKeys.ts, different prefix (mtgs_ vs mtg_)
   db/
-    types.ts             — plain domain types (Identity, UpstreamServer), no SQL shapes leak out
-    pool.ts               — pg.Pool factory; nothing else creates its own connection
-    IdentityRepository.ts | UpstreamServerRepository.ts | PermissionRepository.ts | AuditLogRepository.ts
-                          — one repository per concern, each behind an interface
+    types.ts                — plain domain types (User, Identity, UpstreamServer, ...)
+    pool.ts                  — pg.Pool factory; nothing else creates its own connection
+    Queryable.ts             — the one method repositories need, satisfied by pg.Pool AND a
+                              transactional pg.PoolClient (what makes integration tests work)
+    UserRepository.ts | IdentityRepository.ts | PermissionRepository.ts | SessionRepository.ts
+    | UpstreamServerRepository.ts | AuditLogRepository.ts
+                              — one repository per concern, each behind an interface
+    SafeAuditLogRepository.ts — decorates any AuditLogRepository so a write() failure can
+                              never mask a tool call that actually succeeded (Phase 2.5)
   gateway/
-    UpstreamToolClient.ts — the minimal slice of the MCP SDK's Client that the handler needs
-    summarizeResult.ts    — pure function, own unit tests
-    ToolCallHandler.ts    — THE core policy (permission check → forward or deny → audit).
-                            Depends only on the interfaces above, constructor-injected.
-                            This is what makes it unit-testable with in-memory fakes.
-  redact.ts             — unchanged, was already single-purpose
-  index.ts              — composition root only: builds real Postgres-backed repositories
-                          and a real MCP Client/Server, wires them into ToolCallHandler,
-                          connects the transport. No business logic lives here.
+    UpstreamToolClient.ts    — the minimal slice of the MCP SDK's Client a handler needs
+    UpstreamConnectionProvider.ts — spawns/connects to one real server; shared by both
+                              entry points so the connect-and-decrypt logic exists once
+    summarizeResult.ts       — pure function, own unit tests
+    ToolCallHandler.ts       — THE core policy for one server (permission check → forward
+                              or deny → audit), constructor-injected interfaces only
+    ToolDiscoveryRouter.ts   — composes one ToolCallHandler per accessible server; exposes
+                              exactly find_tool/call_tool regardless of how many real
+                              servers/tools sit behind it (Phase 2's differentiator)
+  httpGateway/               — everything specific to HTTP mode (Phase 2.5/3b); stdio mode
+                              never imports from here
+    httpConfig.ts            — HTTP-only env vars (port, TLS, rate limits, session TTL)
+    auth.ts                  — Authorization header → Identity, for both an API key
+                              (POST /login only) and a session token (everything else)
+    RateLimiter.ts            — in-memory per-identity token bucket
+    HttpStatusError.ts        — lets session-creation logic carry a real HTTP status code
+    httpServer.ts             — composition root for HTTP mode (see index.ts for stdio's)
+  redact.ts                 — unchanged, was already single-purpose
+  index.ts                  — composition root for STDIO mode: one process, one identity
+                              resolved once at boot, spawned locally by an MCP client
 ```
 
 Every repository is an interface + a `Postgres*` implementation — swapping storage later,
 or using a fake in a test, means writing a new implementation of the same interface, not
-touching `ToolCallHandler`.
+touching `ToolCallHandler`/`ToolDiscoveryRouter`. Two composition roots (`index.ts` for
+stdio, `httpGateway/httpServer.ts` for HTTP) share everything except how they resolve an
+identity and how many of them a running process serves at once — see README.md's "Two
+deployment modes" for when to use which.
 
 ## Testing
 
@@ -190,14 +223,19 @@ excluded from the production build (`tsconfig.json`'s `exclude`).
   policy (allow/deny/error paths, redaction, audit status, that a denied call never reaches
   upstream) without a database or a subprocess. This is the direct payoff of the
   dependency-inversion refactor above.
-- `test/integration/*.test.ts` (`npm run test:integration`) — the four `Postgres*Repository`
-  classes against a real, migrated Postgres. Each test runs inside a transaction that's
-  always rolled back (`test/integration/setupDatabase.ts`'s `withTransaction`), so tests
-  can freely INSERT fixtures without leaving data behind or needing manual cleanup. This
-  required loosening the repositories' constructors from `pg.Pool` to a minimal `Queryable`
-  interface (`db/Queryable.ts`) — satisfied structurally by both `pg.Pool` and a
-  transactional `pg.PoolClient`, so tests can hand in a client mid-transaction with zero
-  changes to the repository code.
+- `httpGateway/*.test.ts` — `RateLimiter.test.ts` (pure logic, injectable clock) and
+  `auth.test.ts` (both header-resolution functions, with fakes for `IdentityRepository`/
+  `SessionRepository` — no HTTP server involved).
+- `test/integration/*.test.ts` (`npm run test:integration`) — all six `Postgres*Repository`
+  classes (`User`, `Identity`, `Permission`, `Session`, `UpstreamServer`, `AuditLog`)
+  against a real, migrated Postgres. Each test runs inside a transaction that's always
+  rolled back (`test/integration/setupDatabase.ts`'s `withTransaction`), so tests can
+  freely INSERT fixtures without leaving data behind or needing manual cleanup — shared
+  seeding helpers live in `test/integration/testFixtures.ts`. This required loosening the
+  repositories' constructors from `pg.Pool` to a minimal `Queryable` interface
+  (`db/Queryable.ts`) — satisfied structurally by both `pg.Pool` and a transactional
+  `pg.PoolClient`, so tests can hand in a client mid-transaction with zero changes to the
+  repository code.
   - **Runs against `TEST_DATABASE_URL`, a separate database from `DATABASE_URL`** — running
     these against the same database used for manual smoke-testing
     (`scripts/seed_test_setup.ts`) caused real unique-constraint collisions the first time
@@ -209,9 +247,15 @@ excluded from the production build (`tsconfig.json`'s `exclude`).
     between ties is unspecified. Fixed by adding `id DESC` as a tiebreaker. The unit test
     suite's in-memory fake couldn't have caught this — it doesn't model transactional
     timestamp semantics — which is the whole point of also having integration tests.
-- `index.ts`'s wiring itself is still only covered by the manual smoke test
-  (`scripts/manual_test_client.ts`), not automated — it's mostly composition (build real
-  objects, connect a transport), lower-value to unit-test than the logic it wires together.
+- Neither composition root (`index.ts` nor `httpGateway/httpServer.ts`) has automated
+  tests of its own wiring — both are covered by manual smoke tests instead
+  (`scripts/manual_test_client.ts`, `scripts/manual_test_phase2.ts`,
+  `scripts/manual_test_http.ts`). They're mostly composition (build real objects, connect
+  a transport), lower-value to unit-test than the logic they wire together — this is a
+  known, accepted gap, not an oversight (see Phase 2.5's "Not yet done" note).
+- 90 tests total as of Phase 3 (58 unit + 32 integration) — see the Status log below for
+  how that grew phase by phase; treat any specific number quoted earlier in this document
+  as a historical snapshot, not the current count.
 
 ## Phased plan
 
@@ -310,7 +354,8 @@ for `findAllowedToolNames`), the real two-server manual demo, and the token meas
 script all still produce identical, correct results (97.1% reduction unchanged) — the
 fixes changed the implementation's shape, not its observable behavior.
 
-### Open architectural gaps found 2026-07-29 (not yet fixed — flagging before Phase 3)
+### Architectural gaps found 2026-07-29 — both now resolved (kept here for the history of
+### how they were found, not as a "still open" list)
 
 Two real gaps surfaced by direct questioning, not found proactively:
 
@@ -334,27 +379,21 @@ Two real gaps surfaced by direct questioning, not found proactively:
    actual call (a mid-flight revoke doesn't stop an already-in-flight call) — lower
    severity since permission changes are expected to be infrequent.
 
-2. **The deployment model has an unresolved centralization question.** The gateway
-   *process* genuinely needs no infrastructure to deploy — each user's MCP client
-   (Devin/Claude/Copilot) spawns it locally as a stdio subprocess by pointing at
-   `dist/index.js`, exactly as documented in README.md. But for governance to mean
-   anything across a *team* (not just solo use), `DATABASE_URL` has to point at one
-   shared Postgres reachable from every machine running the gateway — otherwise each
-   person's permissions/audit trail is a private silo, undermining the entire point.
-   That, in turn, means every developer's laptop needs direct Postgres credentials,
-   which is a materially larger attack surface than the commercial competitors'
-   architecture (Permit.io, Portkey): they run one centrally-hosted gateway *service*
-   reachable by URL, and no client ever gets direct database access — only the gateway
-   itself does. Our current stdio/local-process model doesn't have an equivalent to that
-   yet. Worth resolving before recommending this for real multi-person use: either (a)
-   restrict what a bare Postgres role given to end-user machines can do (e.g. a
-   write-only role for audit_log, read-only + row-level security for permissions,
-   nothing for credentials), or (b) offer a second deployment mode where the gateway runs
-   as a persistent, centrally-hosted service (HTTP/SSE transport) that machines connect
-   to over the network instead of spawning it locally — closer to how the commercial
-   competitors are actually built. Not decided yet; revisit before/during Phase 3.
+2. **Resolved by Phase 2.5, below.** The deployment model had an unresolved
+   centralization question: the gateway *process* genuinely needs no infrastructure to
+   deploy — each user's MCP client (Devin/Claude/Copilot) spawns it locally as a stdio
+   subprocess by pointing at `dist/index.js`. But for governance to mean anything across
+   a *team* (not just solo use), `DATABASE_URL` has to point at one shared Postgres
+   reachable from every machine running the gateway — otherwise each person's
+   permissions/audit trail is a private silo. That, in turn, would mean every developer's
+   laptop needing direct Postgres credentials, a materially larger attack surface than
+   the commercial competitors' architecture (Permit.io, Portkey), who run one
+   centrally-hosted gateway *service* that alone touches the database. Resolved by
+   option (b) below — HTTP mode — rather than option (a) (restricting a shared Postgres
+   role): only `httpGateway/httpServer.ts`'s one running process needs direct database
+   access now; team members' machines only need network access to wherever that runs.
 
-### Phase 2.5 — centralized HTTP deployment mode (in progress, started 2026-07-29)
+### Phase 2.5 — centralized HTTP deployment mode — done, 2026-07-29
 
 Resolves open gap #2 above via option (b): a second deployment mode where the gateway runs
 as one persistent, centrally-hosted service that every team member's MCP client connects to
@@ -517,6 +556,24 @@ Total after Phase 3 (3a-3d): **90 tests** (58 unit + 32 integration), all green.
 
 ## Status log
 
+> This log stops narrating in detail after Phase 2 — Phase 2.5 and Phase 3 (3a-3d) each
+> have their own full write-up (motivation, decisions, what was verified and how) directly
+> under their `###` headings above; this log just anchors them in chronological order
+> rather than repeating them. Read the phase sections for detail, this log for sequence.
+
+- **2026-07-29 (latest)**: Phase 3 complete (3a per-user permissions, 3b session tokens,
+  3c credential rotation, 3d audit log CLI viewer — see each sub-heading above). Also
+  fixed a real gap found as a side effect of adding a second migration file:
+  `scripts/migrate.ts` had no migration-tracking table. 90 tests total (58 unit + 32
+  integration). Also did a documentation pass on this file and README.md after being
+  asked directly whether they'd gone stale — they had (an out-of-date architecture
+  diagram and file tree, a contradiction between the "open gaps" section and Phase 2.5
+  which actually closed one of them, and an actively wrong README table claiming HTTP
+  mode still accepted a raw API key per request after Phase 3b changed that). Fixed all
+  of it rather than just noting it.
+- **2026-07-29 (later)**: Phase 2.5 (centralized HTTP deployment mode) shipped and
+  verified against a real running server with two concurrent identities — see its
+  section above for full detail.
 - **2026-07-29 (later still)**: Phase 2 shipped and verified — see the Phase 2 section
   above for the full detail. Summary: defined two falsifiable claims before writing code,
   proved both with real measurements (not fakes-only, not "should work"): governance holds

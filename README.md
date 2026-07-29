@@ -56,7 +56,8 @@ cp .env.example .env   # fill in DATABASE_URL and TEST_DATABASE_URL (matching th
                         # above) and generate GATEWAY_ENCRYPTION_KEY with:
                         # node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
-# 3. Schema — apply to BOTH databases
+# 3. Schema — apply to BOTH databases. Safe to re-run any time (e.g. after pulling a new
+#    migration file) — scripts/migrate.ts tracks what's already applied and only runs what's new.
 npm run migrate                                            # DATABASE_URL
 DATABASE_URL=$TEST_DATABASE_URL npx tsx scripts/migrate.ts  # TEST_DATABASE_URL
 
@@ -86,12 +87,13 @@ still left to the manual smoke test.
 |---|---|---|
 | Who it's for | Solo use | A team — centrally-managed permissions/audit |
 | How it runs | Spawned locally by each person's MCP client | One persistent, centrally-hosted process everyone connects to over the network |
-| Identity | One `GATEWAY_API_KEY`, resolved once at boot | `Authorization: Bearer <key>` per request, resolved per session |
+| Identity | One `GATEWAY_API_KEY`, resolved once at boot | `POST /login` with your API key first, then a short-lived **session token** on every `/mcp` request — see below |
 | Who needs Postgres credentials | Every machine running the gateway | Only this one process |
+| Permissions | Per user — every API key/session that user holds shares the same grants | Same (permissions are per-user regardless of deployment mode) |
 
-Use stdio mode to try things out. Use HTTP mode for real team use — see DESIGN.md's "Open
-architectural gaps" for why stdio mode alone doesn't scale to a team without giving every
-laptop direct database access.
+Use stdio mode to try things out. Use HTTP mode for real team use — see DESIGN.md's
+"Architectural gaps found 2026-07-29" for why stdio mode alone doesn't scale to a team
+without giving every laptop direct database access.
 
 ### Running HTTP mode
 
@@ -153,3 +155,18 @@ Note there's no `UPSTREAM_SERVER_NAME` (or similar) here — as of Phase 2, the 
 connects to *every* server this API key's identity has any permission grant on, derived
 from the `permissions` table, and exposes them all through the same two meta-tools
 (`find_tool`, `call_tool`). One MCP client entry, many governed servers behind it.
+
+## Operator tools
+
+Neither of these talks to a running gateway process — both connect to Postgres directly,
+so they work regardless of which deployment mode you're using.
+
+```bash
+# Rotate a stored upstream server credential in place (same server id, only the secret changes)
+DATABASE_URL=... GATEWAY_ENCRYPTION_KEY=... \
+  npx tsx scripts/rotate_upstream_credential.ts <server-name> <new-plaintext-credential>
+
+# Query the audit trail — every filter is optional
+DATABASE_URL=... npx tsx scripts/view_audit_log.ts \
+  [--identity=<name>] [--server=<name>] [--status=allowed_success|allowed_failure|denied] [--limit=<n>]
+```
