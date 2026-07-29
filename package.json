@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "test": "tsx --test src/**/*.test.ts",
     "test:integration": "tsx --test test/integration/**/*.test.ts",
+    "test:e2e": "npm run build && tsx --test test/e2e/**/*.test.ts",
     "test:all": "npm run typecheck && npm test && npm run test:integration"
   },
   "dependencies": {

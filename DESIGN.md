@@ -896,6 +896,58 @@ which operators can move onto real shared roles afterward.
   defect — but worth remembering as a real constraint of the free tier specifically, not
   a general finding about the architecture.
 
+### Real end-to-end test + default roles — done, 2026-07-29
+
+Asked directly for two things: (1) default roles, with an admin account and a
+"developer" role covering Jira/Atlassian, SonarQube, and Jenkins, and (2) a genuine
+end-to-end test proving credentials actually land correctly in Postgres — plus
+confirmation that role/permission relationships are real foreign keys, not loose
+strings (they are — verified against `information_schema` directly: `permissions.role_id
+→ roles.id`, `permissions.server_id → upstream_servers.id`, `user_roles.user_id →
+users.id`, `user_roles.role_id → roles.id`, `user_credentials.user_id → users.id`,
+`user_credentials.server_id → upstream_servers.id`. Postgres itself rejects a row
+referencing a role/user/server that doesn't exist — this isn't application-level
+discipline, it's the database enforcing it).
+
+- **`scripts/seed_default_roles.ts`** (new, idempotent — safe to re-run): creates the
+  `admin` role (empty; `bootstrap_admin.ts` still does the actual first grant) and a
+  `developer` role with blanket access to three real servers — registers `jira` (the
+  Keychain-reading wrapper, no env needed, same as the earlier Jira migration),
+  `sonarqube` (`sonarqube-server-mcp`, same Docker-free choice as before), and `jenkins`
+  (`@kud/mcp-jenkins` — evaluated like every other third-party server this session: not
+  deprecated, 873 weekly downloads, last published ~2 months before this check, 37 real
+  tools, verified by actually connecting and listing tools before adopting it).
+- **`test/e2e/roleBasedCredentials.e2e.test.ts`** (new, `npm run test:e2e`): a genuinely
+  different kind of test from everything else in this codebase — spawns the real *built*
+  gateway (`dist/index.js`) as a real subprocess, drives it over the real MCP protocol
+  (`register_my_credential`, `manage_roles`), then verifies the result with **raw SQL
+  against Postgres**, completely bypassing `UserCredentialRepository`/`CredentialVault`'s
+  own code paths. That's the point: a repository-level test can only prove "this class
+  agrees with itself"; this proves a credential submitted through a real session by a
+  real (recreated) user actually ends up correctly encrypted in the real table, and
+  decrypts back to exactly what was submitted — and separately, that an admin's
+  `manage_roles` call reflects the real database state, not a mocked one.
+- Deliberately backs the test's three servers with the dependency-free
+  `@modelcontextprotocol/server-memory` reference server instead of the real Jira/
+  SonarQube/Jenkins wrappers, while still naming them `jira`/`sonarqube`/`jenkins` — an
+  automated test needs to run hermetically every time (no live credentials, no flaky
+  external network calls, no crash if a real upstream server can't spawn without a real
+  secret), while still exercising the exact same role → permission → self-service
+  credential plumbing `seed_default_roles.ts` sets up for real.
+- Each test run creates real, committed rows (a real subprocess in a separate connection
+  needs to actually see this data — a rolled-back transaction, unlike the rest of this
+  project's integration tests, doesn't work here) under a random suffix, and tears every
+  one down in a `finally` block regardless of pass/fail. Confirmed zero leftover rows
+  after a real run.
+- **A real gap surfaced while building this, not yet fixed**: both composition roots
+  connect to every accessible server via a single `Promise.all` with no per-server error
+  isolation — if any *one* server a user has permission on fails to spawn (bad
+  credentials, unreachable network, missing local dependency), the whole session fails to
+  start, even for servers that would have worked fine. Worth fixing (isolate failures
+  per-server, expose a partially-degraded session) but out of scope for this change —
+  added to the backlog below.
+- 131 tests total (78 unit + 51 integration + 2 e2e), all green.
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no
@@ -920,6 +972,14 @@ Not exhaustive either; real use will surface more. Grouped by what kind of gap e
 - [ ] **TOCTOU window between permission check and call.** Already documented under
       "Architectural gaps found 2026-07-29" (item 1's tail note) — a mid-flight permission
       revoke doesn't stop a call already in flight. Low severity, still unfixed.
+- [ ] **No per-server error isolation when connecting.** Found while building the
+      role-based-access-control e2e test: both composition roots connect to every
+      accessible server via one `Promise.all([...])` — if any single server fails to
+      spawn (bad credentials, unreachable network, missing local dependency), the whole
+      session fails to start, even for servers that would have connected fine. Should
+      isolate per-server failures and expose a partially-degraded session instead
+      (accessible servers minus whichever ones failed, surfaced somehow — maybe via
+      `list_services`).
 - [ ] **Shared/pooled upstream connections.** Already flagged in Phase 2.5's "Not yet
       done" note — today each session/process opens its own subprocess to a real server
       even if another identity is already connected to the same one. Works, just not as
