@@ -310,6 +310,43 @@ for `findAllowedToolNames`), the real two-server manual demo, and the token meas
 script all still produce identical, correct results (97.1% reduction unchanged) — the
 fixes changed the implementation's shape, not its observable behavior.
 
+### Open architectural gaps found 2026-07-29 (not yet fixed — flagging before Phase 3)
+
+Two real gaps surfaced by direct questioning, not found proactively:
+
+1. **Audit-log write failures can misreport a successful call as failed.**
+   `ToolCallHandler.callTool()`'s success path calls `upstreamClient.callTool()` then
+   `auditLog.write()` inside the same `try`. If the upstream call succeeds but the
+   *audit write* then throws (e.g. a transient Postgres blip), the `catch` block treats
+   it as a call failure, writes a second (also likely failing) audit entry, and rethrows
+   to the agent — which may retry an action that already happened (real risk for anything
+   non-idempotent: file writes, messages sent, records deleted). Needs fixing: audit
+   failures should never mask a real result — e.g. catch the audit write specifically,
+   log it to stderr/a local fallback, and still return the real result to the caller.
+   There's also a smaller TOCTOU window between the permission check and the actual call
+   (a mid-flight revoke doesn't stop an already-in-flight call) — lower severity since
+   permission changes are expected to be infrequent, not fixed either.
+
+2. **The deployment model has an unresolved centralization question.** The gateway
+   *process* genuinely needs no infrastructure to deploy — each user's MCP client
+   (Devin/Claude/Copilot) spawns it locally as a stdio subprocess by pointing at
+   `dist/index.js`, exactly as documented in README.md. But for governance to mean
+   anything across a *team* (not just solo use), `DATABASE_URL` has to point at one
+   shared Postgres reachable from every machine running the gateway — otherwise each
+   person's permissions/audit trail is a private silo, undermining the entire point.
+   That, in turn, means every developer's laptop needs direct Postgres credentials,
+   which is a materially larger attack surface than the commercial competitors'
+   architecture (Permit.io, Portkey): they run one centrally-hosted gateway *service*
+   reachable by URL, and no client ever gets direct database access — only the gateway
+   itself does. Our current stdio/local-process model doesn't have an equivalent to that
+   yet. Worth resolving before recommending this for real multi-person use: either (a)
+   restrict what a bare Postgres role given to end-user machines can do (e.g. a
+   write-only role for audit_log, read-only + row-level security for permissions,
+   nothing for credentials), or (b) offer a second deployment mode where the gateway runs
+   as a persistent, centrally-hosted service (HTTP/SSE transport) that machines connect
+   to over the network instead of spawning it locally — closer to how the commercial
+   competitors are actually built. Not decided yet; revisit before/during Phase 3.
+
 ### Phase 3 (was Phase 2 — parity/hygiene, still worth doing, just not the differentiator)
 - [ ] Replace static API keys with short-lived session tokens (issued after some login step)
       + rotation of the stored upstream credentials.
