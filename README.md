@@ -309,3 +309,27 @@ A user whose role has `is_admin = true` additionally gets `manage_roles({action,
 `list_users`, `delete_user`, `delete_credential`. Completely hidden from `tools/list` for
 anyone else — not just undocumented, structurally absent from what a non-admin's session
 can even see or call.
+
+```bash
+# Sets up sensible defaults: an empty "admin" role (grant it to someone with
+# bootstrap_admin.ts above) and a "developer" role with access to jira/sonarqube/jenkins.
+# Idempotent -- safe to re-run.
+DATABASE_URL=... npx tsx scripts/seed_default_roles.ts
+```
+
+## Testing
+
+```bash
+npm test              # unit tests (fakes only, no real Postgres)
+npm run test:integration  # real Postgres, one rolled-back transaction per test
+npm run test:e2e       # see below
+npm run test:all       # typecheck + test + test:integration
+```
+
+`test:e2e` is a different kind of test from everything else here: it builds the real
+gateway, spawns it as a real subprocess, drives it over the real MCP protocol, and
+verifies the result with raw SQL against Postgres — completely bypassing the
+repositories under test, since the whole point is proving a credential submitted through
+a real session actually lands correctly encrypted in the real table, not just that a
+class agrees with itself. Requires `TEST_DATABASE_URL` and `GATEWAY_ENCRYPTION_KEY`; see
+`test/e2e/roleBasedCredentials.e2e.test.ts`.
