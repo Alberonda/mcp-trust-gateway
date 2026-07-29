@@ -67,7 +67,7 @@ const identity: Identity = {
 };
 
 function server(name: string): UpstreamServer {
-  return { id: `server-${name}`, name, command: "irrelevant", credential: null };
+  return { id: `server-${name}`, name, command: "irrelevant", args: [], credential: null };
 }
 
 /** Builds one ToolCallHandler wired to a fake upstream exposing `tools`, gated by whatever

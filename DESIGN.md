@@ -538,6 +538,56 @@ worth the added surface area yet.
 
 Total after Phase 3 (3a-3d): **90 tests** (58 unit + 32 integration), all green.
 
+### Phase 3.5 — structured {command, args, env} upstream config — done, 2026-07-29
+
+Prompted by a direct, good question: every real MCP client config (Claude Desktop, Cursor,
+VS Code, Devin CLI) has independently converged on the same `{command, args, env}` shape
+for describing how to spawn a server — not an officially ratified part of the MCP spec
+itself, but a de facto standard because it maps 1:1 onto `child_process.spawn()`. Before
+this, `upstream_servers.command` was one string, naively split on whitespace at connect
+time (broken for paths with spaces), and only a single secret could be injected as
+`UPSTREAM_CREDENTIAL` — not enough for a real server needing several named env vars (e.g.
+SonarQube needs both `SONARQUBE_TOKEN` and `SONARQUBE_URL`), which is exactly what blocked
+migrating that specific integration behind the gateway.
+
+- `migrations/004_structured_upstream_config.sql`: adds `upstream_servers.args` (JSONB
+  array); backfills every existing row by splitting the old combined `command` string the
+  same way the runtime code used to (lossless for everything registered so far, since it's
+  the exact same split logic, just moved to migration time). `encrypted_credential`
+  keeps its column names but its *meaning* changes: the decrypted plaintext is now a
+  JSON-serialized env map, not a single opaque secret — no schema change needed for that,
+  since `CredentialVault` already just encrypts/decrypts arbitrary strings.
+- `db/types.ts`'s `UpstreamServer` gained `args: readonly string[]`.
+- `db/UpstreamServerRepository.ts`: new `create(NewUpstreamServer)` — the one standardized
+  way to register a server going forward, taking the same `{name, command, args,
+  encryptedEnv}` shape (encryption itself stays the caller's job, consistent with every
+  other repository here). `updateCredential` renamed to `updateEnv` to match the new
+  semantics.
+- `gateway/UpstreamConnectionProvider.ts`: uses `server.command`/`server.args` directly
+  (no more splitting), decrypts and `JSON.parse`s the env map, merges it into the spawned
+  subprocess's environment.
+- `scripts/lib/registerServer.ts` (new): the one place that encrypts a plaintext env map
+  and calls `create()` — every provisioning script (`seed_test_setup.ts`,
+  `seed_phase2_demo.ts`, `provision_real_user.ts`, `provision_render_deployment.ts`) now
+  goes through this instead of hand-rolling its own `INSERT` + encryption.
+  `rotate_upstream_credential.ts` updated to rotate a full JSON env map instead of a
+  single value.
+- **Verified against real Postgres and a real spawned subprocess, not just the schema**:
+  registered a server with a real args array *and* two env vars at once (the exact
+  SonarQube-shaped case that motivated this) via `registerServer()`, connected through the
+  real stdio gateway, and successfully wrote a file through it — confirming args and a
+  multi-key env both survive the full encrypt → store → decrypt → spawn round trip.
+- Applied to both the local dev database and the Neon-hosted deployment; the pre-existing
+  demo servers (`sandbox-a`, `sandbox-b`, `personal-sandbox`, `filesystem`) all backfilled
+  correctly and kept working, confirmed by inspection after migrating.
+- 93 tests total (58 unit + 35 integration) after this sub-phase, all green.
+- **Not done yet**: actually migrating `jira`/`github-mcp-server`/`sonarqube` (the
+  operator's real, currently-working MCP integrations) to be registered servers behind the
+  gateway instead of standalone client-config entries — that's the natural next step this
+  unblocks, staged deliberately (see README.md's worked example) rather than done in the
+  same change, since it means risking real, daily-use tools if something doesn't spawn
+  correctly through the gateway (Docker-based SonarQube in particular).
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no

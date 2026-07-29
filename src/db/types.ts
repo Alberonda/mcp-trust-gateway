@@ -19,16 +19,25 @@ export interface Identity {
   readonly isActive: boolean;
 }
 
+/** Encrypts an arbitrary string — as of the {command, args, env} rework, that string is a
+ *  JSON-serialized map of every env var the server needs (see UpstreamConnectionProvider),
+ *  not a single opaque secret. CredentialVault doesn't care either way; it just
+ *  encrypts/decrypts text. */
 export interface EncryptedUpstreamCredential {
   readonly ciphertext: Buffer;
   readonly iv: Buffer;
   readonly authTag: Buffer;
 }
 
+/** How to spawn one real MCP server — deliberately the same {command, args, env} shape
+ *  every MCP client config already uses (Claude Desktop, Cursor, VS Code, Devin CLI...),
+ *  so registering a server here is a direct translation of its existing client config,
+ *  not a new format to learn. */
 export interface UpstreamServer {
   readonly id: string;
   readonly name: string;
   readonly command: string;
-  /** Absent when the server needs no credential (e.g. the filesystem server). */
+  readonly args: readonly string[];
+  /** Absent when the server needs no env vars at all (e.g. the filesystem server). */
   readonly credential: EncryptedUpstreamCredential | null;
 }
