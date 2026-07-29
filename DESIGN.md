@@ -89,17 +89,20 @@ real tools from day one.
 
 ## Phased plan
 
-### Phase 1 (current, MVP)
-- [ ] Postgres schema: `users`/`identities` (hashed API key), `permissions` (ACL: identity →
-      allowed (server, tool) pairs), `credentials` (encrypted upstream secrets),
+### Phase 1 (MVP) — functionally complete, verified 2026-07-29
+- [x] Postgres schema: `identities` (hashed API key), `permissions` (ACL: identity →
+      allowed (server, tool) pairs), `upstream_servers` (encrypted upstream secrets),
       `audit_log` (who/what/when/result, secrets redacted).
-- [ ] MCP proxy core: accepts MCP connections from an agent, authenticates via API key,
-      forwards `tools/list` and `tools/call` to one real upstream MCP server (pick one simple
-      public server to prototype against — e.g. the official filesystem or GitHub MCP server).
-- [ ] Permission check before every forwarded call; reject + log if the identity isn't
-      allowed to call that (server, tool).
-- [ ] Every call (allowed or rejected) writes a structured audit log row, with credential/
+- [x] MCP proxy core: accepts MCP connections from an agent, authenticates via API key,
+      forwards `tools/list` and `tools/call` to one real upstream MCP server. Verified
+      against `@modelcontextprotocol/server-filesystem`.
+- [x] Permission check before every forwarded call; reject + log if the identity isn't
+      allowed to call that (server, tool). Verified: revoking a permission row correctly
+      denies a previously-working call.
+- [x] Every call (allowed or rejected) writes a structured audit log row, with credential/
       secret values redacted before storage.
+- [ ] Real automated test suite (currently just a manual smoke-test script,
+      `scripts/manual_test_client.ts`) — worth adding before Phase 2 grows the surface area.
 
 ### Phase 2
 - [ ] Replace static API keys with short-lived session tokens (issued after some login step)
@@ -119,3 +122,20 @@ real tools from day one.
 - **2026-07-29**: Project scaffolded. Idea validated via research (see sources above).
   Stack and Phase 1 scope decided. Repo created at
   `/Users/AREYESM/PycharmProjects/mcp-trust-gateway`. Code not yet written beyond scaffold.
+- **2026-07-29 (later same session)**: Phase 1 proven end to end against a real Postgres
+  (Docker container `mcp-trust-gateway-postgres`, host port 5433) and a real MCP server
+  (`@modelcontextprotocol/server-filesystem`, no credentials needed — good first target).
+  Verified with `scripts/manual_test_client.ts` (a throwaway smoke test, not a real test
+  suite yet):
+  - Allowed call: `read_text_file` on a granted identity returns the real file content
+    through the proxy, and writes an `allowed_success` audit_log row.
+  - Denied call: revoking the permission row makes the same call return a clean
+    "Permission denied" MCP error result instead of reaching the upstream server at all,
+    and writes a `denied` audit_log row.
+  - `scripts/seed_test_setup.ts` added as the (temporary, Phase-1-only) way to provision
+    a test identity/server/permission — real provisioning is Phase 2's job.
+  Next session should start with: either a real test suite (currently zero automated
+  tests), or moving on to Phase 1's remaining item (permission list is done; the last
+  Phase 1 checkbox — structured/redacted audit log — is also done) — so Phase 1 is
+  functionally complete pending decision on what test coverage is worth adding before
+  starting Phase 2.
