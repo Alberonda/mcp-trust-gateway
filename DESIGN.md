@@ -776,6 +776,42 @@ actually eliminated.
   despite adding a migration — removing `PerUserCredentialResolver`'s tests and
   simplifying `UpstreamServerRepository`'s more than offset it).
 
+### `bridge/` — thin stdio-to-HTTP relay, done, 2026-07-29
+
+Prompted by wanting to eliminate the local stdio mode entirely — "no tiene sentido tener
+dos fuentes de verdad." Investigated whether that's actually achievable.
+
+- **Devin CLI (and most MCP clients) already support remote HTTP servers directly**, with
+  a static `Authorization` header — no local process needed at all for clients that
+  support this. See README.md's "Connecting without a local process."
+- For clients that only support stdio, or to avoid sending a long-lived `GATEWAY_API_KEY`
+  on every request, built `bridge/` as a genuinely separate, minimal package (own
+  `package.json`, only depends on the MCP SDK — no `pg`, no crypto, no business logic).
+  It holds exactly one secret (`GATEWAY_API_KEY`), logs in once, proactively refreshes the
+  session token before it expires, and forwards `tools/list`/`tools/call` verbatim to the
+  real deployed `/mcp` endpoint. Verified against the real Render deployment.
+- **A real, hard limit found while pushing on "eliminate local entirely"**: attempted to
+  migrate `sonarqube` to be reachable from the Neon/Render deployment the same way
+  `jira` and `memory-demo` are. It failed — not a code bug, a network one. Confirmed with
+  public DNS (`dns.google/resolve`): `sonarqube.softwarefactory.cloud.corpintra.net`
+  returns `NXDOMAIN` from the public internet — it's an internal-only corporate hostname,
+  while `mercedes-benz.atlassian.net` (Jira Cloud) resolves to a real public IP. No amount
+  of application code fixes a network that genuinely doesn't route there; Render, on
+  public cloud infrastructure, can never reach an intranet-only host. The gateway
+  process itself has to run somewhere with actual network access to whatever it needs to
+  reach — stdio mode's "run wherever the user already is" turns out to be a genuine
+  requirement for some upstream servers, not just a simpler-but-worse option.
+- **Proposed next step, not yet built**: a relay-agent pattern (the same shape as GitHub
+  Actions self-hosted runners or Datadog's on-prem agent) — the remote gateway stays the
+  single source of truth for permissions/audit/encrypted storage, but for servers flagged
+  as needing local network access, it dispatches the already-decrypted credential for one
+  active call to a thin local agent (an outbound-only connection, so nothing needs to
+  accept inbound traffic) that executes it and returns the result. The agent itself would
+  hold no secret at rest — same trust model as `bridge/`, just relaying execution instead
+  of relaying requests. Not yet implemented; real design work (a persistent
+  request-dispatch protocol) before Phase 3.5's role-based-access-control work took
+  priority instead.
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no

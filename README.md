@@ -157,6 +157,35 @@ connects to *every* server this API key's identity has any permission grant on, 
 from the `permissions` table, and exposes them all through the same two meta-tools
 (`find_tool`, `call_tool`). One MCP client entry, many governed servers behind it.
 
+## Connecting without a local process
+
+For HTTP mode, most MCP clients (Devin CLI included) support remote servers directly —
+point them at the deployed `/mcp` URL instead of spawning anything locally:
+
+```json
+{
+  "mcpServers": {
+    "trust-gateway": {
+      "url": "https://mcp-trust-gateway.onrender.com/mcp",
+      "transport": "http",
+      "headers": { "Authorization": "Bearer <session-token-or-api-key>" }
+    }
+  }
+}
+```
+
+If your client only supports local stdio servers, or you'd rather not send a long-lived
+`GATEWAY_API_KEY` on every request, see `bridge/` — a thin relay that holds only your API
+key locally (never `DATABASE_URL`/`GATEWAY_ENCRYPTION_KEY`) and keeps a short-lived session
+token fresh on your behalf.
+
+**A real limitation found while trying this**: any upstream server that's only reachable
+from inside a private/corporate network (e.g. an on-prem SonarQube instance) can never be
+served by a gateway running on public cloud infrastructure like Render — no amount of code
+changes fixes a network that simply doesn't route there. For those specific servers, run
+the gateway itself somewhere with network access to them (locally, or on infrastructure
+inside that network) — this isn't optional depending on how the gateway is deployed.
+
 ### A real worked example (secrets redacted)
 
 Before adopting the gateway, a typical MCP client config lists every real server directly
