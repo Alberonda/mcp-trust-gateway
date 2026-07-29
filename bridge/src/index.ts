@@ -5,21 +5,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerResult } from "@modelcontextprotocol/sdk/types.js";
 
-/**
- * A thin stdio-to-HTTP relay for mcp-trust-gateway's HTTP mode. Holds exactly one secret
- * locally -- GATEWAY_API_KEY, a narrow, revocable credential -- and never the database
- * URL or master encryption key, which stay exclusively on whatever server runs
- * entrypoints/http/httpServer.ts. This process has zero business logic of its own: no
- * permission checks, no decryption, nothing an attacker with this process's memory could
- * use to reach any OTHER user's data. It only knows how to log in, keep a short-lived
- * session token fresh, and forward tools/list and tools/call verbatim.
- *
- * MCP clients that support remote HTTP servers directly (with a static Authorization
- * header) don't need this at all -- see the main README's "Connecting without a local
- * process" section. This exists for clients that only support stdio servers, or for
- * anyone who'd rather not send a long-lived API key on every single request (see
- * DESIGN.md for why session tokens exist).
- */
+/** See README.md for what this is, when you need it, and the trust model it's built
+ *  around. */
 
 interface Session {
   readonly token: string;

@@ -9,7 +9,9 @@ import { encode } from "gpt-tokenizer";
  * gpt-tokenizer's o200k_base encoding (GPT-4o class models) against the *exact* JSON
  * payload a tools/list response actually contains.
  *
- * Run scripts/seed_phase2_demo.ts first (registers sandbox-a/b) and pass BROAD_API_KEY.
+ * Needs a real identity permitted on two real filesystem servers first — register two
+ * upstream_servers rows (scripts/lib/registerServer.ts) pointed at /tmp/mcp-test-sandbox-a
+ * and -b, grant one identity blanket access to both, and pass its key as BROAD_API_KEY.
  */
 
 async function tokensOfDirectConnection(command: string, args: string[]): Promise<number> {

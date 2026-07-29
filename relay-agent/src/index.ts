@@ -4,28 +4,10 @@ import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotoc
 import WebSocket from "ws";
 
 /**
- * Executes real MCP server subprocesses on behalf of a remote mcp-trust-gateway
- * deployment, for servers only reachable from THIS machine's network (an internal
- * corporate SonarQube/Jenkins instance, say — see DESIGN.md's "Role-based access
- * control" postscripts for the real incident that made this necessary: a subprocess
- * spawning without crashing only proves the binary starts, not that the network call it
- * will eventually make can succeed).
- *
- * Holds exactly one secret locally — GATEWAY_API_KEY, a real, revocable identity's
- * credential, the same one any other client of the gateway would use. Never the database
- * URL, never the master encryption key, never a stored credential's ciphertext. The
- * gateway decrypts a server's credential itself and sends this process only the already-
- * decrypted env for one active connection, at the moment it's needed — this process
- * itself never touches Postgres, never sees any OTHER server's credential, and forgets
- * the one it did see the moment that connection closes.
- *
- * Deliberately not "another MCP server" — the direction of control is inverted from a
- * normal MCP client/server relationship (the gateway, not this process, initiates every
- * request), which is why this speaks its own small protocol instead of MCP's request/
- * response shape. See src/ports/RelayAgentRegistry.ts in the main package for that
- * protocol's real definition — duplicated here rather than imported, the same way
- * bridge/ doesn't import from the main package either, so this stays a genuinely
- * separate, minimal thing with its own dependency footprint.
+ * See README.md for what this is and the trust model it's built around. The request/
+ * response message shapes below mirror the main package's src/ports/RelayAgentRegistry.ts
+ * — duplicated rather than imported, so this stays a genuinely separate package with its
+ * own minimal dependency footprint (same reasoning as bridge/).
  */
 
 interface RelayRequest {
