@@ -10,6 +10,8 @@ import { PostgresPermissionRepository } from "./db/PermissionRepository.js";
 import { createPool } from "./db/pool.js";
 import { SafeAuditLogRepository } from "./db/SafeAuditLogRepository.js";
 import { PostgresUpstreamServerRepository } from "./db/UpstreamServerRepository.js";
+import { PostgresUserCredentialRepository } from "./db/UserCredentialRepository.js";
+import { PerUserCredentialResolver } from "./gateway/PerUserCredentialResolver.js";
 import { ToolCallHandler } from "./gateway/ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "./gateway/ToolDiscoveryRouter.js";
 import { PerSessionUpstreamConnectionProvider } from "./gateway/UpstreamConnectionProvider.js";
@@ -41,6 +43,7 @@ async function main(): Promise<void> {
   // already-completed tool call had failed (see SafeAuditLogRepository's docstring).
   const auditLog = new SafeAuditLogRepository(new PostgresAuditLogRepository(pool));
   const connectionProvider = new PerSessionUpstreamConnectionProvider(new CredentialVault(config.encryptionKey));
+  const credentialResolver = new PerUserCredentialResolver(new PostgresUserCredentialRepository(pool));
 
   const identity = await identities.findByApiKeyHash(hashApiKey(config.gatewayApiKey));
   if (!identity) {
@@ -55,8 +58,12 @@ async function main(): Promise<void> {
 
   const handlers = await Promise.all(
     accessibleServers.map(async (server) => {
-      const { client } = await connectionProvider.connect(server);
-      return new ToolCallHandler(identity, server, permissions, auditLog, client);
+      // Each user's own credential for this server, if they have one — see
+      // PerUserCredentialResolver's docstring for why this matters (a shared server row
+      // must never mean every user shares one person's personal access token).
+      const resolvedServer = await credentialResolver.resolve(server, identity.userId);
+      const { client } = await connectionProvider.connect(resolvedServer);
+      return new ToolCallHandler(identity, resolvedServer, permissions, auditLog, client);
     }),
   );
   const router = new ToolDiscoveryRouter(handlers, identity, auditLog);

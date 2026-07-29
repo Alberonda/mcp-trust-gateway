@@ -222,14 +222,22 @@ Two things worth knowing if you do this yourself:
 
 ## Operator tools
 
-Neither of these talks to a running gateway process — both connect to Postgres directly,
-so they work regardless of which deployment mode you're using.
+None of these talk to a running gateway process — all connect to Postgres directly, so
+they work regardless of which deployment mode you're using.
 
 ```bash
-# Rotate every env var for an upstream server in place (same server id/name/args, only the
-# env changes) — pass the FULL env map the server needs, not just the one value that changed
+# Rotate every env var for an upstream server's own DEFAULT credential in place (same
+# server id/name/args, only the env changes) — pass the FULL env map, not just the one
+# value that changed
 DATABASE_URL=... GATEWAY_ENCRYPTION_KEY=... \
   npx tsx scripts/rotate_upstream_credential.ts <server-name> '{"KEY":"new-value"}'
+
+# Give ONE user their own credential for an already-registered server, instead of them
+# sharing whoever registered it's default (e.g. everyone should use their own personal
+# access token for github/sonarqube/jira, not the admin's) — see DESIGN.md's "Per-user
+# credential overrides"
+DATABASE_URL=... GATEWAY_ENCRYPTION_KEY=... \
+  npx tsx scripts/set_user_credential.ts <user-name> <server-name> '{"KEY":"this-users-own-value"}'
 
 # Query the audit trail — every filter is optional
 DATABASE_URL=... npx tsx scripts/view_audit_log.ts \
