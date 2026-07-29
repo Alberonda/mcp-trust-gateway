@@ -106,7 +106,7 @@ class FakeUserCredentialRepository implements UserCredentialRepository {
 function buildHandler() {
   const roles = new FakeRoleRepository();
   const users = new FakeUserRepository();
-  const servers = new FakeUpstreamServerRepository([{ id: "s1", name: "sonarqube", command: "irrelevant", args: [] }]);
+  const servers = new FakeUpstreamServerRepository([{ id: "s1", name: "sonarqube", command: "irrelevant", args: [], requiresRelay: false }]);
   const credentials = new FakeUserCredentialRepository();
   return { handler: new AdminToolHandler(roles, users, servers, credentials), roles, users, servers, credentials };
 }

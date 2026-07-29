@@ -8,6 +8,8 @@ export interface NewUpstreamServer {
   readonly name: string;
   readonly command: string;
   readonly args: readonly string[];
+  /** Defaults to false — see domain/types.ts's UpstreamServer.requiresRelay doc. */
+  readonly requiresRelay?: boolean;
 }
 
 export interface UpstreamServerRepository {

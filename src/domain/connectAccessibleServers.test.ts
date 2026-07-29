@@ -14,7 +14,7 @@ class NullUserCredentialRepository implements UserCredentialRepository {
 }
 
 function server(name: string): UpstreamServer {
-  return { id: `server-${name}`, name, command: "irrelevant", args: [] };
+  return { id: `server-${name}`, name, command: "irrelevant", args: [], requiresRelay: false };
 }
 
 function fakeConnected(): ConnectedUpstream {

@@ -323,6 +323,29 @@ shape as any MCP client config, minus `env` — a server never carries its own c
 above (or, better, have the user run `register_my_credential` themselves) once it's
 registered.
 
+## Relay agent — for servers only reachable from a specific network
+
+Some real upstream servers (an internal SonarQube/Jenkins instance, say) can only ever be
+reached from inside a specific network — a subprocess spawning without crashing only
+proves the binary starts, not that the network call it will eventually make can succeed.
+For those, mark the server `requires_relay = true` and run `relay-agent/` (a genuinely
+separate package, own dependencies, own build) on a machine that actually has network
+access to it:
+
+```bash
+cd relay-agent
+npm install && npm run build
+GATEWAY_API_KEY=mtg_... GATEWAY_URL=https://your-gateway-host node dist/index.js
+```
+
+It connects *outbound* to the gateway's `/agent` endpoint (nothing needs an inbound port
+open on this machine) and, from then on, executes exactly what the gateway tells it to —
+holding no database credentials and no master encryption key, only its own
+`GATEWAY_API_KEY` and, for each active call, whatever already-decrypted env the gateway
+sends it. Every other server keeps being spawned directly by whichever process is
+running the gateway, same as always; this only changes *where the subprocess physically
+runs* for the servers that specifically need it.
+
 ## Roles and self-service
 
 Permissions are granted to **roles**, not individual users — see `migrations/007_roles.sql`.
