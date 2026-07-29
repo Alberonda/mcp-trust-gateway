@@ -724,6 +724,58 @@ concerns that hadn't been connected.
   another, and the fallback genuinely works, not just in isolation.
 - 104 tests total (64 unit + 40 integration) after this feature, all green.
 
+> **Superseded a few minutes later** — see "Remove the shared default upstream
+> credential" immediately below. Kept this section as-is rather than rewriting history:
+> the fallback-to-server-default design above was real, tested, and deployed, and got
+> reconsidered almost immediately once its actual implication was called out directly.
+
+### Remove the shared default upstream credential — done, 2026-07-29
+
+Called out directly, correctly, right after the section above shipped: *"no quiero que
+haya 'credenciales por defecto', es una práctica de mierda — quiero que el gateway trate a
+todos los usuarios por igual."* Right call. The design above kept `upstream_servers`'s own
+credential as a fallback for users with no override — which meant whoever registered a
+server with their own PAT (in practice, always the operator) was structurally the
+*privileged* user everyone else's calls fell back to. That's exactly the "am I serving my
+credentials to other users" problem from earlier in the day, just narrowed rather than
+actually eliminated.
+
+- `migrations/006_remove_shared_upstream_credential.sql`: backfills any existing default
+  credential into `user_credentials` for every user who currently has a permission grant
+  on that server (so no one loses access mid-migration), then drops
+  `encrypted_credential`/`credential_iv`/`credential_auth_tag` from `upstream_servers`
+  entirely. There is no column left to hold a default — not "empty by convention", not
+  representable in the schema at all.
+- `UpstreamServer` (db/types.ts) is now just `{id, name, command, args}`. Every credential
+  lookup goes through `UserCredentialRepository.find(userId, serverId)` — renamed from
+  `findOverride` since there's nothing left to override, it's just *the* credential now.
+- `UpstreamConnectionProvider.connect()` takes the credential as an explicit second
+  argument instead of reading it off the server object — makes "this provider has no
+  opinion on whose credential this is" a type signature, not just a comment.
+- `PerUserCredentialResolver` deleted entirely. It only ever existed to implement "the
+  user's override, or the server's default" — with no default left, calling it would have
+  been a literal pass-through to `UserCredentialRepository.find()`, not worth a class.
+- `scripts/rotate_upstream_credential.ts` deleted — redundant with
+  `scripts/set_user_credential.ts` now that there's no server-level default to rotate;
+  every credential rotation is a per-user operation.
+- **Verified for real, not just at the repository layer**: confirmed the operator's own
+  pre-existing SonarQube credential backfilled byte-for-byte into their own
+  `user_credentials` row, confirmed `encrypted_credential` no longer exists as a column at
+  all, and re-ran a real `system_status` call through the gateway afterward — still
+  returns the real instance's version and `UP` status, now served entirely from that
+  user's own row.
+- **Also verified against the live Render deployment**, not just locally — applied the
+  migration to the Neon database, pushed the corresponding code, waited for Render's
+  auto-redeploy, then ran a full login → session token → `find_tool` round trip against
+  the real HTTPS endpoint afterward. Deliberately checked this explicitly rather than
+  assuming it: a schema migration applied to a database whose *old* code is still
+  deployed would have broken that deployment (querying columns that no longer exist)
+  until the matching code caught up — worth remembering as a real deployment-ordering
+  hazard for any future migration that drops columns, not just this one.
+- 96 tests total (59 unit + 37 integration) after this change (net decrease from before
+  despite adding a migration — removing `PerUserCredentialResolver`'s tests and
+  simplifying `UpstreamServerRepository`'s more than offset it).
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no
