@@ -69,7 +69,7 @@ const testIdentity: Identity = {
   apiKeyHash: "irrelevant",
   isActive: true,
 };
-const testServer: UpstreamServer = { id: "server-1", name: "test-server", command: "irrelevant", args: [], credential: null };
+const testServer: UpstreamServer = { id: "server-1", name: "test-server", command: "irrelevant", args: [] };
 
 function buildHandler(options: {
   allowed?: boolean;

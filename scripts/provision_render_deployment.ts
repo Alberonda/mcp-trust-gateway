@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   const client = new pg.Client({ connectionString: config.databaseUrl });
   await client.connect();
 
-  const server = await registerServer(client, config.encryptionKey, {
+  const server = await registerServer(client, {
     name: "memory-demo",
     command: "npx",
     args: ["-y", "@modelcontextprotocol/server-memory"],
