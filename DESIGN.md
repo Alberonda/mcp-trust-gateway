@@ -314,18 +314,25 @@ fixes changed the implementation's shape, not its observable behavior.
 
 Two real gaps surfaced by direct questioning, not found proactively:
 
-1. **Audit-log write failures can misreport a successful call as failed.**
-   `ToolCallHandler.callTool()`'s success path calls `upstreamClient.callTool()` then
-   `auditLog.write()` inside the same `try`. If the upstream call succeeds but the
-   *audit write* then throws (e.g. a transient Postgres blip), the `catch` block treats
-   it as a call failure, writes a second (also likely failing) audit entry, and rethrows
-   to the agent — which may retry an action that already happened (real risk for anything
-   non-idempotent: file writes, messages sent, records deleted). Needs fixing: audit
-   failures should never mask a real result — e.g. catch the audit write specifically,
-   log it to stderr/a local fallback, and still return the real result to the caller.
-   There's also a smaller TOCTOU window between the permission check and the actual call
-   (a mid-flight revoke doesn't stop an already-in-flight call) — lower severity since
-   permission changes are expected to be infrequent, not fixed either.
+1. **Fixed, same day.** Audit-log write failures could misreport a successful call as
+   failed. `ToolCallHandler.callTool()`'s success path called `upstreamClient.callTool()`
+   then `auditLog.write()` inside the same `try` — if the upstream call succeeded but the
+   *audit write* then threw (e.g. a transient Postgres blip), the `catch` block treated
+   it as a call failure and rethrew to the agent, which could retry an action that already
+   happened (real risk for anything non-idempotent). Fixed with `SafeAuditLogRepository`
+   (`src/db/SafeAuditLogRepository.ts`): a decorator around any `AuditLogRepository` whose
+   `write()` never throws — failures are reported via an injectable callback (defaults to
+   `console.error`) instead. `findRecentByIdentity` (reads) is deliberately NOT wrapped —
+   a failed read has no successful action to mask. Wired in once, at the composition root
+   (`index.ts`), with **zero changes** to `ToolCallHandler`/`ToolDiscoveryRouter` — exactly
+   the payoff of depending on the `AuditLogRepository` interface rather than a concrete
+   class. Verified the fix actually matters: temporarily removing the wrapper reproduces
+   the original bug exactly (`Error: Postgres is unreachable` propagating out of a call
+   that had already succeeded upstream) — confirmed with a throwaway test file before
+   reverting; the permanent regression test lives in `ToolCallHandler.test.ts`.
+   There's still a smaller, unfixed TOCTOU window between the permission check and the
+   actual call (a mid-flight revoke doesn't stop an already-in-flight call) — lower
+   severity since permission changes are expected to be infrequent.
 
 2. **The deployment model has an unresolved centralization question.** The gateway
    *process* genuinely needs no infrastructure to deploy — each user's MCP client

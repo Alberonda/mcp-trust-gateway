@@ -12,6 +12,7 @@ import { PostgresIdentityRepository } from "./db/IdentityRepository.js";
 import { PostgresPermissionRepository } from "./db/PermissionRepository.js";
 import type { PermissionRepository } from "./db/PermissionRepository.js";
 import { createPool } from "./db/pool.js";
+import { SafeAuditLogRepository } from "./db/SafeAuditLogRepository.js";
 import { PostgresUpstreamServerRepository } from "./db/UpstreamServerRepository.js";
 import type { Identity, UpstreamServer } from "./db/types.js";
 import { ToolCallHandler } from "./gateway/ToolCallHandler.js";
@@ -39,7 +40,9 @@ async function main(): Promise<void> {
   const identities = new PostgresIdentityRepository(pool);
   const upstreamServers = new PostgresUpstreamServerRepository(pool);
   const permissions = new PostgresPermissionRepository(pool);
-  const auditLog = new PostgresAuditLogRepository(pool);
+  // Wrapped so a transient audit-write failure can never surface as if a real, possibly
+  // already-completed tool call had failed (see SafeAuditLogRepository's docstring).
+  const auditLog = new SafeAuditLogRepository(new PostgresAuditLogRepository(pool));
   const vault = new CredentialVault(config.encryptionKey);
 
   const identity = await identities.findByApiKeyHash(hashApiKey(config.gatewayApiKey));
