@@ -1,7 +1,7 @@
 import { loadBaseConfig } from "../src/config.js";
-import type { AuditStatus } from "../src/constants.js";
-import { PostgresAuditLogRepository } from "../src/db/AuditLogRepository.js";
-import { createPool } from "../src/db/pool.js";
+import type { AuditStatus } from "../src/domain/constants.js";
+import { PostgresAuditLogRepository } from "../src/adapters/postgres/AuditLogRepository.js";
+import { createPool } from "../src/adapters/postgres/pool.js";
 
 /**
  * Operator tool (Phase 3d): a comfortable way to actually read the audit trail, instead of

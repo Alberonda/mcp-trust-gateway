@@ -10,7 +10,7 @@ async function connectAs(apiKey: string): Promise<Client> {
   await client.connect(
     new StdioClientTransport({
       command: "node",
-      args: ["dist/index.js"],
+      args: ["dist/entrypoints/stdio/index.js"],
       env: { ...process.env, GATEWAY_API_KEY: apiKey },
     }),
   );

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PostgresRoleRepository } from "../../src/db/RoleRepository.js";
+import { PostgresRoleRepository } from "../../src/adapters/postgres/RoleRepository.js";
 import { withTransaction } from "./setupDatabase.js";
 import { seedUserAndIdentity } from "./testFixtures.js";
 

@@ -9,7 +9,7 @@ import type { ServerResult } from "@modelcontextprotocol/sdk/types.js";
  * A thin stdio-to-HTTP relay for mcp-trust-gateway's HTTP mode. Holds exactly one secret
  * locally -- GATEWAY_API_KEY, a narrow, revocable credential -- and never the database
  * URL or master encryption key, which stay exclusively on whatever server runs
- * httpGateway/httpServer.ts. This process has zero business logic of its own: no
+ * entrypoints/http/httpServer.ts. This process has zero business logic of its own: no
  * permission checks, no decryption, nothing an attacker with this process's memory could
  * use to reach any OTHER user's data. It only knows how to log in, keep a short-lived
  * session token fresh, and forward tools/list and tools/call verbatim.

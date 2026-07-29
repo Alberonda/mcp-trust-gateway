@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PostgresUserCredentialRepository } from "../../src/db/UserCredentialRepository.js";
+import { PostgresUserCredentialRepository } from "../../src/adapters/postgres/UserCredentialRepository.js";
 import { withTransaction } from "./setupDatabase.js";
 import { seedServer, seedUserAndIdentity } from "./testFixtures.js";
 

@@ -4,11 +4,11 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import pg from "pg";
-import { PostgresRoleRepository } from "../../src/db/RoleRepository.js";
-import { CredentialVault } from "../../src/security/vault.js";
+import { PostgresRoleRepository } from "../../src/adapters/postgres/RoleRepository.js";
+import { AesGcmCredentialVault } from "../../src/adapters/security/CredentialVault.js";
 
 /**
- * A genuine end-to-end test: spawns the REAL built gateway (dist/index.js) as a real
+ * A genuine end-to-end test: spawns the REAL built gateway (dist/entrypoints/stdio/index.js) as a real
  * subprocess, drives it over the real MCP protocol, and — critically — verifies the
  * result by querying Postgres DIRECTLY with raw SQL afterward, completely independent of
  * the application code under test. This is deliberately NOT a repository-level test with
@@ -16,7 +16,7 @@ import { CredentialVault } from "../../src/security/vault.js";
  * answer "does a real credential submitted through a real session actually end up
  * correctly encrypted in the real table," which no unit test can prove by itself.
  *
- * Requires TEST_DATABASE_URL, GATEWAY_ENCRYPTION_KEY, and a built dist/index.js (run
+ * Requires TEST_DATABASE_URL, GATEWAY_ENCRYPTION_KEY, and a built dist/entrypoints/stdio/index.js (run
  * `npm run build` first) — see package.json's "test:e2e" script.
  *
  * The three "developer" servers here are named jira/sonarqube/jenkins to mirror
@@ -31,7 +31,7 @@ function requireEnv(name: string): string {
   if (!value) {
     throw new Error(
       `${name} is not set. This is an end-to-end test — it needs a real, migrated Postgres ` +
-        `(TEST_DATABASE_URL) and the real GATEWAY_ENCRYPTION_KEY, plus a built dist/index.js ` +
+        `(TEST_DATABASE_URL) and the real GATEWAY_ENCRYPTION_KEY, plus a built dist/entrypoints/stdio/index.js ` +
         `(npm run build). See package.json's "test:e2e" script.`,
     );
   }
@@ -40,7 +40,7 @@ function requireEnv(name: string): string {
 
 const testDatabaseUrl = requireEnv("TEST_DATABASE_URL");
 const encryptionKey = Buffer.from(requireEnv("GATEWAY_ENCRYPTION_KEY"), "hex");
-const vault = new CredentialVault(encryptionKey);
+const vault = new AesGcmCredentialVault(encryptionKey);
 
 const DEVELOPER_SERVER_NAMES = ["jira", "sonarqube", "jenkins"] as const;
 
@@ -79,7 +79,7 @@ async function setupFixture(): Promise<TestFixture> {
 
   const adminApiKey = `mtg_e2e_admin_${suffix}`;
   const developerApiKey = `mtg_e2e_developer_${suffix}`;
-  const { hashApiKey } = await import("../../src/security/apiKeys.js");
+  const { hashApiKey } = await import("../../src/adapters/security/apiKeys.js");
   await db.query(`INSERT INTO identities (user_id, name, api_key_hash) VALUES ($1, $2, $3)`, [
     adminUser.id,
     `e2e-admin-identity-${suffix}`,
@@ -122,7 +122,7 @@ function connectAsGatewayClient(apiKey: string): Promise<Client> {
     .connect(
       new StdioClientTransport({
         command: "node",
-        args: ["dist/index.js"],
+        args: ["dist/entrypoints/stdio/index.js"],
         env: {
           ...process.env,
           GATEWAY_API_KEY: apiKey,

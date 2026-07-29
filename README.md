@@ -15,10 +15,10 @@ first in any new session.
 Any MCP client can talk to this gateway either way below — nothing about the tools/
 permissions/audit logic differs between them, only how a client reaches it:
 
-- **stdio** (`src/index.ts`): the client (Devin CLI, Claude Desktop, ...) spawns
-  `node dist/index.js` itself as a local subprocess and talks to it over stdin/stdout.
+- **stdio** (`src/entrypoints/stdio/index.ts`): the client (Devin CLI, Claude Desktop, ...) spawns
+  `node dist/entrypoints/stdio/index.js` itself as a local subprocess and talks to it over stdin/stdout.
   No network involved in reaching the gateway itself.
-- **HTTP** (`src/httpGateway/httpServer.ts`, `streamable-http` transport): any client —
+- **HTTP** (`src/entrypoints/http/httpServer.ts`, `streamable-http` transport): any client —
   including a custom chatbot/agent that only knows how to call HTTP endpoints — can
   connect to a persistent, centrally-hosted instance (see the Render deployment) over the
   network, the same way you'd point a client at any other remote MCP server.
@@ -124,7 +124,7 @@ still left to the manual smoke test.
 
 ## Two deployment modes
 
-| | Stdio mode (`src/index.ts`) | HTTP mode (`src/httpGateway/httpServer.ts`) |
+| | Stdio mode (`src/entrypoints/stdio/index.ts`) | HTTP mode (`src/entrypoints/http/httpServer.ts`) |
 |---|---|---|
 | Who it's for | Solo use | A team — centrally-managed permissions/audit |
 | How it runs | Spawned locally by each person's MCP client | One persistent, centrally-hosted process everyone connects to over the network |
@@ -181,7 +181,7 @@ e.g. in Devin CLI / Claude Desktop's MCP config:
   "mcpServers": {
     "trust-gateway": {
       "command": "node",
-      "args": ["/path/to/mcp-trust-gateway/dist/index.js"],
+      "args": ["/path/to/mcp-trust-gateway/dist/entrypoints/stdio/index.js"],
       "env": {
         "GATEWAY_API_KEY": "mtg_...",
         "DATABASE_URL": "postgres://...",
@@ -266,7 +266,7 @@ because of this migration, and a Docker-vs-corporate-CA problem SonarQube specif
     "github-mcp-server": { "command": "/path/to/mcp-wrappers/github-enterprise.sh", "args": [] },
     "trust-gateway": {
       "command": "node",
-      "args": ["/path/to/mcp-trust-gateway/dist/index.js"],
+      "args": ["/path/to/mcp-trust-gateway/dist/entrypoints/stdio/index.js"],
       "env": { "GATEWAY_API_KEY": "mtg_...", "DATABASE_URL": "postgres://...", "GATEWAY_ENCRYPTION_KEY": "..." }
     }
   }

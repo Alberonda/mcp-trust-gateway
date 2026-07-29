@@ -1,5 +1,5 @@
 import pg from "pg";
-import type { Queryable } from "../../src/db/Queryable.js";
+import type { Queryable } from "../../src/ports/Queryable.js";
 
 /**
  * Every integration test runs inside its own transaction that's rolled back afterwards —
