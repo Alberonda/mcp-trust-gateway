@@ -185,21 +185,15 @@ sitting in the config file:
 }
 ```
 
-After adding the gateway as one more entry (what's actually running today), those three
-are unchanged — the gateway doesn't replace them by itself, it's an additional, governed
-path for whatever real servers you register behind it (see "Operator tools" below for
-`personal-sandbox` and `memory-demo`, the two registered so far):
+**What it actually looks like today**, after migrating `jira` and `sonarqube` to be
+*registered servers behind the gateway* (see DESIGN.md's "Real integrations migrated
+behind the gateway" for the full story, including a real security fix that landed first
+because of this migration, and a Docker-vs-corporate-CA problem SonarQube specifically hit):
 
 ```json
 {
   "mcpServers": {
-    "jira": { "command": "/bin/bash", "args": ["/path/to/mcp-wrappers/jira-atlassian.sh"] },
     "github-mcp-server": { "command": "/path/to/mcp-wrappers/github-enterprise.sh", "args": [] },
-    "sonarqube": {
-      "command": "docker",
-      "args": ["run", "--init", "-i", "--rm", "-e", "SONARQUBE_TOKEN", "-e", "SONARQUBE_URL", "mcp/sonarqube-mb"],
-      "env": { "SONARQUBE_TOKEN": "squ_...", "SONARQUBE_URL": "https://sonarqube.example.com" }
-    },
     "trust-gateway": {
       "command": "node",
       "args": ["/path/to/mcp-trust-gateway/dist/index.js"],
@@ -209,27 +203,22 @@ path for whatever real servers you register behind it (see "Operator tools" belo
 }
 ```
 
-**Not done yet, but this is what it would look like**: migrating `jira`/`github-mcp-server`/
-`sonarqube` to be *registered servers behind the gateway* instead of standalone entries —
-each one's `{command, args, env}` becomes an `upstream_servers` row (see
-`scripts/lib/registerServer.ts`), and its config entry disappears entirely, leaving only:
+`jira` and `sonarqube` don't appear here at all anymore — each became one
+`upstream_servers` row (via `scripts/lib/registerServer.ts`) instead of a standalone
+config entry, and every call to either now goes through the gateway's permission check
+and audit log. `github-mcp-server` is intentionally still standalone — no blocking issue
+found migrating it, just not done yet; it's the natural next candidate.
 
-```json
-{
-  "mcpServers": {
-    "trust-gateway": {
-      "command": "node",
-      "args": ["/path/to/mcp-trust-gateway/dist/index.js"],
-      "env": { "GATEWAY_API_KEY": "mtg_...", "DATABASE_URL": "postgres://...", "GATEWAY_ENCRYPTION_KEY": "..." }
-    }
-  }
-}
-```
-
-That last step is deliberately staged, not automatic — moving a real, currently-working
-integration behind the gateway means testing that the gateway can actually spawn it
-correctly (Docker-based servers like SonarQube are more delicate than a plain `npx`
-command) *before* removing the standalone entry that currently works, not after.
+Two things worth knowing if you do this yourself:
+- **Jira needed no `env` at all** — its wrapper script pulls credentials from macOS
+  Keychain at runtime, independent of who spawned it, so only `{command, args}` had to be
+  registered.
+- **SonarQube's original Docker-based image couldn't be migrated as-is**: a Docker
+  container doesn't inherit the host machine's trust store, so it failed TLS validation
+  against an internal corporate SonarQube instance whose certificate is signed by a
+  private corporate CA. Switched to a Docker-free npm-based MCP server for SonarQube
+  instead (`sonarqube-server-mcp`) — runs as a plain Node process, so it inherits the same
+  trust store native wrappers like Jira's already do.
 
 ## Operator tools
 

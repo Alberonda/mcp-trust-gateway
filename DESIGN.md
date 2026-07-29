@@ -633,6 +633,53 @@ own environment, not merely its own secret.
   actual needs.
 - 94 tests total (59 unit + 35 integration) after this fix, all green.
 
+### Real integrations migrated behind the gateway, 2026-07-29 — Jira and SonarQube
+
+The "not done yet" from Phase 3.5 above, now done — the operator's two real, previously
+standalone MCP integrations moved behind the gateway, each verified against its real
+backend, not a demo server.
+
+**Jira**: `jira-atlassian.sh` (a bash wrapper around `mcp-atlassian`) registered with no
+env at all — it pulls its own credentials from macOS Keychain at runtime, independent of
+who spawned it, so the gateway just needed `{command: "/bin/bash", args: [<wrapper
+path>]}`. Verified with a real JQL search against `internal-jira.example.com` — got a
+real ticket back (and, on a first attempt, a real "unbounded JQL" policy error from
+Atlassian's own API, further confirming the credential and connection both worked; only
+the query needed fixing).
+
+**SonarQube**: this is where things got interesting. The existing Docker-based
+integration (`mcp/sonarqube-mb`) failed with `unable to get local issuer certificate` —
+diagnosed as a real, pre-existing issue unrelated to the gateway: the operator's Mac trusts
+`sonarqube.internal.example.com` because the corporate root CA
+(`Corp-Root-CA-G3` → `Corp-Issuing-CA01-G3`) is installed in the *system* keychain (MDM/JSS-managed) —
+a fresh Docker container has its own isolated filesystem and never inherits that trust
+store, so any HTTPS call to that internal domain from inside the container fails
+certificate validation. Confirmed the mechanism directly: `curl` from the host verified
+the cert fine; the identical `curl` from a generic container failed with the exact same
+"unable to get local issuer certificate" error.
+- Investigated Docker-free alternatives instead of working around the cert problem.
+  Found three: `sonarqube-api-mcp` (8 tools, read-only), `sonarqube-mcp-server` (28 tools,
+  **flagged "no longer supported" by npm** — ruled out), and `sonarqube-server-mcp` (38
+  tools, actively published, not deprecated). Chose the last one — closest feature parity
+  to a real production integration, and since it runs as a plain Node process (like the
+  Jira wrapper), it inherits the Mac's own trust store and never hits the container
+  problem at all.
+- Registered via `registerServer()` with `{command: "npx", args: ["-y",
+  "sonarqube-server-mcp"], env: {SONARQUBE_URL, SONARQUBE_TOKEN}}`. Verified with a real
+  `system_status` call through the gateway — got back the real instance's version and
+  `"status": "UP"`.
+- **This is exactly the scenario the subprocess-env-leak fix above exists for**: adopting
+  a community-published, non-vendor-official npm package as a real upstream server is a
+  genuine supply-chain trust decision, not a demo. Fixing the env leak *before* this
+  migration (rather than after) meant this was the first real integration done with that
+  protection already in place, not a retrofit.
+- Both `jira` and `sonarqube` removed from the operator's standalone `mcpServers` config
+  entirely — only `github-mcp-server` (not yet migrated) and `trust-gateway` remain there.
+  Confirmed in the real audit log: calls to both now show up as `jira/...` and
+  `sonarqube/...` entries, alongside the pre-existing sandbox/memory-demo activity.
+- `github-mcp-server` intentionally left as-is for now — no blocking issue found for it,
+  just not yet done; natural next candidate if this pattern continues.
+
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
       writes) — flagged in research as the hardest, most tool-specific problem; no
