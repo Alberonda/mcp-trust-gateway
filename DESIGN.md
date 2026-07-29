@@ -150,65 +150,100 @@ real tools from day one.
 | Audit/credential storage | **PostgreSQL** (not SQLite) | Chosen explicitly by user — treat as a real service from day 1, not a personal single-file prototype. |
 | Encryption | AES-256 at the application layer for the credential vault (real upstream API keys), TLS everywhere in transit | Standard, well-understood approach; avoids relying on Postgres-specific extensions (pgcrypto) so the encryption logic is portable if the DB changes later. |
 
-## Architecture (current file layout — kept up to date as of Phase 3; if this ever
-## drifts from `src/`'s actual contents again, trust `src/` and fix this section, not the
-## other way around)
+## Architecture — hexagonal (ports & adapters), explicit as of 2026-07-29
 
 The first working version had all the right behavior but the wrong shape for a project
 meant to grow: a single `main()` did config loading, DB queries, credential decryption,
 subprocess spawning, *and* the permission/audit business logic inline inside the MCP
 request handlers. That made the actual policy (the reason this project exists) untestable
-without a real Postgres and a real spawned subprocess. Refactored into, and grown since:
+without a real Postgres and a real spawned subprocess. The original refactor (Phase 1-3)
+already produced genuine ports (interfaces) and adapters (`Postgres*` implementations) —
+just organized by *topic* (`db/`, `gateway/`, `httpGateway/`, `security/`) rather than by
+*layer*. Reorganized so the folders say what they already were:
 
 ```
 src/
-  constants.ts           — every named value that would otherwise be a magic number/string
-  config.ts               — reads process.env for what BOTH entry points need
-                            (DATABASE_URL, GATEWAY_ENCRYPTION_KEY) + stdio-only GATEWAY_API_KEY
-  security/
-    vault.ts               — AES-256-GCM for the upstream credential vault
-    apiKeys.ts              — long-lived API key generation/hashing
-    sessionTokens.ts        — short-lived session token generation/hashing (Phase 3b) —
-                              same approach as apiKeys.ts, different prefix (mtgs_ vs mtg_)
-  db/
-    types.ts                — plain domain types (User, Identity, UpstreamServer, ...)
-    pool.ts                  — pg.Pool factory; nothing else creates its own connection
-    Queryable.ts             — the one method repositories need, satisfied by pg.Pool AND a
-                              transactional pg.PoolClient (what makes integration tests work)
-    UserRepository.ts | IdentityRepository.ts | PermissionRepository.ts | SessionRepository.ts
-    | UpstreamServerRepository.ts | AuditLogRepository.ts
-                              — one repository per concern, each behind an interface
-    SafeAuditLogRepository.ts — decorates any AuditLogRepository so a write() failure can
-                              never mask a tool call that actually succeeded (Phase 2.5)
-  gateway/
-    UpstreamToolClient.ts    — the minimal slice of the MCP SDK's Client a handler needs
-    UpstreamConnectionProvider.ts — spawns/connects to one real server; shared by both
-                              entry points so the connect-and-decrypt logic exists once
-    summarizeResult.ts       — pure function, own unit tests
-    ToolCallHandler.ts       — THE core policy for one server (permission check → forward
-                              or deny → audit), constructor-injected interfaces only
-    ToolDiscoveryRouter.ts   — composes one ToolCallHandler per accessible server; exposes
-                              exactly find_tool/call_tool regardless of how many real
+  domain/                  — business logic + entities. Zero framework/infra imports —
+                            depends only on ports/ (interfaces), never on a concrete
+                            adapter or the MCP SDK directly.
+    types.ts                 — plain entities: User, Role, Identity, UpstreamServer, ...
+    constants.ts              — every named value that would otherwise be a magic number/string
+    redact.ts                 — strips secret-shaped values before anything gets audited
+    summarizeResult.ts        — pure function: a tool result -> one audit-log-sized line
+    ToolCallHandler.ts        — THE core policy for one server (permission check → forward
+                              or deny → audit)
+    ToolDiscoveryRouter.ts    — composes one ToolCallHandler per accessible server; exposes
+                              a small fixed set of meta-tools regardless of how many real
                               servers/tools sit behind it (Phase 2's differentiator)
-  httpGateway/               — everything specific to HTTP mode (Phase 2.5/3b); stdio mode
-                              never imports from here
-    httpConfig.ts            — HTTP-only env vars (port, TLS, rate limits, session TTL)
-    auth.ts                  — Authorization header → Identity, for both an API key
-                              (POST /login only) and a session token (everything else)
-    RateLimiter.ts            — in-memory per-identity token bucket
-    HttpStatusError.ts        — lets session-creation logic carry a real HTTP status code
-    httpServer.ts             — composition root for HTTP mode (see index.ts for stdio's)
-  redact.ts                 — unchanged, was already single-purpose
-  index.ts                  — composition root for STDIO mode: one process, one identity
-                              resolved once at boot, spawned locally by an MCP client
+    SelfServiceHandler.ts     — list_services/register_my_credential
+    AdminToolHandler.ts       — manage_roles (admin-only)
+    connectAccessibleServers.ts — connects to every accessible server, isolating failures
+                              per server (a misconfigured one must never break the rest)
+    SafeAuditLogRepository.ts — decorates any AuditLogRepository port so a write() failure
+                              can never mask a tool call that actually succeeded — this is
+                              domain, not an adapter: it only depends on the port, would
+                              wrap any future non-Postgres implementation identically
+  ports/                   — interfaces adapters must implement; the vocabulary domain/
+                            code is written against
+    UserRepository.ts | IdentityRepository.ts | PermissionRepository.ts | RoleRepository.ts
+    | SessionRepository.ts | UpstreamServerRepository.ts | UserCredentialRepository.ts
+    | AuditLogRepository.ts   — one port per storage concern
+    UpstreamToolClient.ts     — the minimal slice of the MCP SDK's Client a handler needs
+    UpstreamConnectionProvider.ts — "connect to one real upstream server," independent of
+                              *how* (subprocess today; nothing rules out a pooled or
+                              network-based implementation later)
+    CredentialVault.ts        — encrypt/decrypt, independent of *which* cipher
+    RateLimiter.ts             — "may this identity proceed right now"
+    Queryable.ts               — the one method repository adapters need — satisfied by
+                              both pg.Pool and a transactional pg.PoolClient, which is what
+                              makes integration tests work (see "Testing")
+  adapters/                — concrete implementations of the ports, grouped by which real
+                            technology they talk to
+    postgres/                 — one Postgres* class per ports/*Repository.ts, plus pool.ts
+                              (pg.Pool factory) — nothing else creates its own connection
+    mcp/
+      UpstreamConnectionProvider.ts — PerSessionUpstreamConnectionProvider: spawns a real
+                              MCP server subprocess per connect() call
+    security/
+      CredentialVault.ts        — AesGcmCredentialVault: AES-256-GCM
+      apiKeys.ts                 — long-lived API key generation/hashing
+      sessionTokens.ts           — short-lived session token generation/hashing, same
+                              approach as apiKeys.ts, different prefix (mtgs_ vs mtg_)
+    http/
+      RateLimiter.ts             — InMemoryTokenBucketRateLimiter: viable because HTTP mode
+                              is one long-lived process; stdio mode has nothing to
+                              rate-limit against across calls, so never needs this adapter
+  entrypoints/              — composition roots. The only code allowed to import BOTH a
+                            port and its concrete adapter and wire them together; nothing
+                            in domain/ or ports/ ever does this
+    stdio/index.ts             — one process, one identity resolved once at boot, spawned
+                              locally by an MCP client (Devin CLI, Claude Desktop, ...)
+    http/
+      httpServer.ts              — one persistent, centrally-hosted process serving many
+                              identities concurrently over the network
+      httpConfig.ts               — HTTP-only env vars (port, TLS, rate limits, session TTL)
+      auth.ts                     — Authorization header → Identity (API key at POST
+                              /login, session token everywhere else)
+      HttpStatusError.ts          — lets session-creation logic carry a real HTTP status code
+  config.ts                — reads process.env for what BOTH entrypoints need
+                            (DATABASE_URL, GATEWAY_ENCRYPTION_KEY) + stdio-only GATEWAY_API_KEY
 ```
 
-Every repository is an interface + a `Postgres*` implementation — swapping storage later,
-or using a fake in a test, means writing a new implementation of the same interface, not
-touching `ToolCallHandler`/`ToolDiscoveryRouter`. Two composition roots (`index.ts` for
-stdio, `httpGateway/httpServer.ts` for HTTP) share everything except how they resolve an
-identity and how many of them a running process serves at once — see README.md's "Two
-deployment modes" for when to use which.
+**The dependency rule that actually matters, checkable by grep**: nothing in `domain/` or
+`ports/` imports from `adapters/` or `entrypoints/` — verified with a real grep after the
+reorganization, zero hits. `adapters/` implements `ports/` interfaces, and does reference
+`domain/types.ts`/`domain/constants.ts` (entity shapes and shared constants — the
+vocabulary every layer speaks), but never a `domain/` *behavior* class (`ToolCallHandler`,
+`ToolDiscoveryRouter`, ...) — also verified, not assumed. Only `entrypoints/` is allowed to
+know about both a port and which concrete adapter satisfies it for a given process — that's
+the literal definition of a composition root.
+
+Every repository is an interface (`ports/`) + a `Postgres*` implementation
+(`adapters/postgres/`) — swapping storage later, or using a fake in a test, means writing a
+new adapter, not touching `domain/`. Two composition roots (`entrypoints/stdio/index.ts`,
+`entrypoints/http/httpServer.ts`) share every port and every domain class, differing only
+in how they resolve an identity and how many of them a running process serves at once —
+see README.md's "Who can consume this, and how" for when to use which.
 
 ## Testing
 
@@ -216,26 +251,24 @@ deployment modes" for when to use which.
 dependency) against every `src/**/*.test.ts`. Test files sit next to the code they cover,
 excluded from the production build (`tsconfig.json`'s `exclude`).
 
-- `security/apiKeys.test.ts`, `security/vault.test.ts`, `redact.test.ts`,
-  `gateway/summarizeResult.test.ts` — pure-function/pure-class unit tests, no fakes needed.
-- `gateway/ToolCallHandler.test.ts` — the most valuable suite: in-memory fakes for
-  `PermissionRepository`, `AuditLogRepository`, and `UpstreamToolClient` prove the actual
-  policy (allow/deny/error paths, redaction, audit status, that a denied call never reaches
-  upstream) without a database or a subprocess. This is the direct payoff of the
-  dependency-inversion refactor above.
-- `httpGateway/*.test.ts` — `RateLimiter.test.ts` (pure logic, injectable clock) and
-  `auth.test.ts` (both header-resolution functions, with fakes for `IdentityRepository`/
-  `SessionRepository` — no HTTP server involved).
-- `test/integration/*.test.ts` (`npm run test:integration`) — all six `Postgres*Repository`
-  classes (`User`, `Identity`, `Permission`, `Session`, `UpstreamServer`, `AuditLog`)
+- `adapters/security/*.test.ts`, `domain/redact.test.ts`, `domain/summarizeResult.test.ts`
+  — pure-function/pure-class unit tests, no fakes needed.
+- `domain/ToolCallHandler.test.ts` — the most valuable suite: in-memory fakes for
+  `PermissionRepository`, `AuditLogRepository`, and `UpstreamToolClient` (all `ports/`)
+  prove the actual policy (allow/deny/error paths, redaction, audit status, that a denied
+  call never reaches upstream) without a database or a subprocess. This is the direct
+  payoff of depending on ports, never concrete adapters, from domain/.
+- `adapters/http/RateLimiter.test.ts` (pure logic, injectable clock) and
+  `entrypoints/http/auth.test.ts` (both header-resolution functions, with fakes for
+  `IdentityRepository`/`SessionRepository` — no HTTP server involved).
+- `test/integration/*.test.ts` (`npm run test:integration`) — every `Postgres*` adapter
   against a real, migrated Postgres. Each test runs inside a transaction that's always
   rolled back (`test/integration/setupDatabase.ts`'s `withTransaction`), so tests can
   freely INSERT fixtures without leaving data behind or needing manual cleanup — shared
   seeding helpers live in `test/integration/testFixtures.ts`. This required loosening the
-  repositories' constructors from `pg.Pool` to a minimal `Queryable` interface
-  (`db/Queryable.ts`) — satisfied structurally by both `pg.Pool` and a transactional
-  `pg.PoolClient`, so tests can hand in a client mid-transaction with zero changes to the
-  repository code.
+  repositories' constructors from `pg.Pool` to a minimal `Queryable` port — satisfied
+  structurally by both `pg.Pool` and a transactional `pg.PoolClient`, so tests can hand in
+  a client mid-transaction with zero changes to the adapter code.
   - **Runs against `TEST_DATABASE_URL`, a separate database from `DATABASE_URL`** — running
     these against the same database used for manual smoke-testing
     (`scripts/seed_test_setup.ts`) caused real unique-constraint collisions the first time
@@ -247,15 +280,14 @@ excluded from the production build (`tsconfig.json`'s `exclude`).
     between ties is unspecified. Fixed by adding `id DESC` as a tiebreaker. The unit test
     suite's in-memory fake couldn't have caught this — it doesn't model transactional
     timestamp semantics — which is the whole point of also having integration tests.
-- Neither composition root (`index.ts` nor `httpGateway/httpServer.ts`) has automated
-  tests of its own wiring — both are covered by manual smoke tests instead
-  (`scripts/manual_test_client.ts`, `scripts/manual_test_phase2.ts`,
-  `scripts/manual_test_http.ts`). They're mostly composition (build real objects, connect
-  a transport), lower-value to unit-test than the logic they wire together — this is a
-  known, accepted gap, not an oversight (see Phase 2.5's "Not yet done" note).
-- 90 tests total as of Phase 3 (58 unit + 32 integration) — see the Status log below for
-  how that grew phase by phase; treat any specific number quoted earlier in this document
-  as a historical snapshot, not the current count.
+- `test/e2e/*.test.ts` (`npm run test:e2e`) — spawns the real, built stdio composition
+  root (`entrypoints/stdio/index.ts`) as a real subprocess, drives it over the real MCP
+  protocol. HTTP mode's composition root (`entrypoints/http/httpServer.ts`) still has no
+  automated equivalent — only manual smoke tests (`scripts/manual_test_client.ts`,
+  `scripts/manual_test_phase2.ts`, `scripts/manual_test_http.ts`).
+- 141 tests total (87 unit + 51 integration + 3 e2e) as of the hexagonal reorganization —
+  see the Status log below for how that grew phase by phase; treat any specific number
+  quoted earlier in this document as a historical snapshot, not the current count.
 
 ## Phased plan
 

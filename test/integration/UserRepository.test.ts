@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PostgresUserRepository } from "../../src/db/UserRepository.js";
+import { PostgresUserRepository } from "../../src/adapters/postgres/UserRepository.js";
 import { withTransaction } from "./setupDatabase.js";
 
 test(

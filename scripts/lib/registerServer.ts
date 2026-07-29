@@ -1,6 +1,6 @@
 import type pg from "pg";
-import { PostgresUpstreamServerRepository } from "../../src/db/UpstreamServerRepository.js";
-import type { UpstreamServer } from "../../src/db/types.js";
+import { PostgresUpstreamServerRepository } from "../../src/adapters/postgres/UpstreamServerRepository.js";
+import type { UpstreamServer } from "../../src/domain/types.js";
 
 export interface ServerToRegister {
   readonly name: string;

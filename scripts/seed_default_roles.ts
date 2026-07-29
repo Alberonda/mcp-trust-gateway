@@ -1,6 +1,6 @@
 import pg from "pg";
 import { loadBaseConfig } from "../src/config.js";
-import { PostgresRoleRepository } from "../src/db/RoleRepository.js";
+import { PostgresRoleRepository } from "../src/adapters/postgres/RoleRepository.js";
 import { registerServer } from "./lib/registerServer.js";
 
 /**

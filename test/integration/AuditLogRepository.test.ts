@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuditStatus } from "../../src/constants.js";
-import { PostgresAuditLogRepository } from "../../src/db/AuditLogRepository.js";
+import { AuditStatus } from "../../src/domain/constants.js";
+import { PostgresAuditLogRepository } from "../../src/adapters/postgres/AuditLogRepository.js";
 import { seedUserAndIdentity } from "./testFixtures.js";
 import { withTransaction } from "./setupDatabase.js";
-import type { Queryable } from "../../src/db/Queryable.js";
+import type { Queryable } from "../../src/ports/Queryable.js";
 
 /** audit_log still records identity_id (which specific credential made a call), not
  *  user_id — see ToolCallHandler's comment on that decision — so tests here only need

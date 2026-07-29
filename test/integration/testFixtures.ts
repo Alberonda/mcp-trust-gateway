@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../../src/db/Queryable.js";
+import type { Queryable } from "../../src/ports/Queryable.js";
 
 /**
  * Shared seeding helpers for integration tests — every test needing a user/identity/server

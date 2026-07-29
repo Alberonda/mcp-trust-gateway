@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import pg from "pg";
-import { hashApiKey } from "../../src/security/apiKeys.js";
+import { hashApiKey } from "../../src/adapters/security/apiKeys.js";
 
 /**
  * Real-world incident, reproduced on purpose: a user permitted on two servers where one
@@ -73,7 +73,7 @@ test(
       await client.connect(
         new StdioClientTransport({
           command: "node",
-          args: ["dist/index.js"],
+          args: ["dist/entrypoints/stdio/index.js"],
           env: { ...process.env, GATEWAY_API_KEY: apiKey, DATABASE_URL: testDatabaseUrl, GATEWAY_ENCRYPTION_KEY: process.env.GATEWAY_ENCRYPTION_KEY! },
         }),
       );

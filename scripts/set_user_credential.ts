@@ -1,8 +1,8 @@
 import { loadBaseConfig } from "../src/config.js";
-import { createPool } from "../src/db/pool.js";
-import { PostgresUpstreamServerRepository } from "../src/db/UpstreamServerRepository.js";
-import { PostgresUserCredentialRepository } from "../src/db/UserCredentialRepository.js";
-import { CredentialVault } from "../src/security/vault.js";
+import { createPool } from "../src/adapters/postgres/pool.js";
+import { PostgresUpstreamServerRepository } from "../src/adapters/postgres/UpstreamServerRepository.js";
+import { PostgresUserCredentialRepository } from "../src/adapters/postgres/UserCredentialRepository.js";
+import { AesGcmCredentialVault } from "../src/adapters/security/CredentialVault.js";
 
 /**
  * Operator tool: sets (or replaces) ONE user's own env/credential for an already-registered
@@ -34,7 +34,7 @@ async function main(): Promise<void> {
 
   const config = loadBaseConfig();
   const pool = createPool(config.databaseUrl);
-  const vault = new CredentialVault(config.encryptionKey);
+  const vault = new AesGcmCredentialVault(config.encryptionKey);
   const upstreamServers = new PostgresUpstreamServerRepository(pool);
   const userCredentials = new PostgresUserCredentialRepository(pool);
 

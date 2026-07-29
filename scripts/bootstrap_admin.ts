@@ -1,7 +1,7 @@
 import { loadBaseConfig } from "../src/config.js";
-import { createPool } from "../src/db/pool.js";
-import { PostgresRoleRepository } from "../src/db/RoleRepository.js";
-import { PostgresUserRepository } from "../src/db/UserRepository.js";
+import { createPool } from "../src/adapters/postgres/pool.js";
+import { PostgresRoleRepository } from "../src/adapters/postgres/RoleRepository.js";
+import { PostgresUserRepository } from "../src/adapters/postgres/UserRepository.js";
 
 /**
  * Operator tool: creates the admin role if it doesn't already exist, and grants it to one

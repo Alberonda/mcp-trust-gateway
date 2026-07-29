@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PostgresPermissionRepository } from "../../src/db/PermissionRepository.js";
+import { PostgresPermissionRepository } from "../../src/adapters/postgres/PermissionRepository.js";
 import { grantPermission, seedServer, seedUserAndIdentity } from "./testFixtures.js";
 import { withTransaction } from "./setupDatabase.js";
 

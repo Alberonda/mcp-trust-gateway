@@ -23,7 +23,7 @@ async function tokensOfDirectConnection(command: string, args: string[]): Promis
 async function tokensThroughGateway(apiKey: string): Promise<number> {
   const client = new Client({ name: "measurement-script", version: "0.0.1" });
   await client.connect(
-    new StdioClientTransport({ command: "node", args: ["dist/index.js"], env: { ...process.env, GATEWAY_API_KEY: apiKey } }),
+    new StdioClientTransport({ command: "node", args: ["dist/entrypoints/stdio/index.js"], env: { ...process.env, GATEWAY_API_KEY: apiKey } }),
   );
   const result = await client.listTools();
   await client.close();

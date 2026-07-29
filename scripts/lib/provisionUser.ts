@@ -1,5 +1,5 @@
 import type pg from "pg";
-import { generateApiKey } from "../../src/security/apiKeys.js";
+import { generateApiKey } from "../../src/adapters/security/apiKeys.js";
 
 export interface ProvisionedUser {
   readonly userId: string;

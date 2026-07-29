@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PostgresIdentityRepository } from "../../src/db/IdentityRepository.js";
+import { PostgresIdentityRepository } from "../../src/adapters/postgres/IdentityRepository.js";
 import { withTransaction } from "./setupDatabase.js";
 
 test(
