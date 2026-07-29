@@ -19,25 +19,27 @@ export interface Identity {
   readonly isActive: boolean;
 }
 
-/** Encrypts an arbitrary string — as of the {command, args, env} rework, that string is a
- *  JSON-serialized map of every env var the server needs (see UpstreamConnectionProvider),
- *  not a single opaque secret. CredentialVault doesn't care either way; it just
- *  encrypts/decrypts text. */
+/** Encrypts an arbitrary string — a JSON-serialized map of every env var a server needs
+ *  (see UpstreamConnectionProvider), not a single opaque secret. CredentialVault doesn't
+ *  care either way; it just encrypts/decrypts text. Always stored per-*user* (see
+ *  db/UserCredentialRepository.ts) — there is no server-level default to fall back to; see
+ *  migrations/006_remove_shared_upstream_credential.sql for why that was removed on
+ *  purpose. */
 export interface EncryptedUpstreamCredential {
   readonly ciphertext: Buffer;
   readonly iv: Buffer;
   readonly authTag: Buffer;
 }
 
-/** How to spawn one real MCP server — deliberately the same {command, args, env} shape
- *  every MCP client config already uses (Claude Desktop, Cursor, VS Code, Devin CLI...),
- *  so registering a server here is a direct translation of its existing client config,
- *  not a new format to learn. */
+/** How to spawn one real MCP server — deliberately the same {command, args} shape every
+ *  MCP client config already uses (Claude Desktop, Cursor, VS Code, Devin CLI...), so
+ *  registering a server here is a direct translation of its existing client config, not a
+ *  new format to learn. Deliberately carries no credential of its own — every user who
+ *  needs one for this server has their own row in user_credentials instead (see that
+ *  file's docstring for why a shared default was removed). */
 export interface UpstreamServer {
   readonly id: string;
   readonly name: string;
   readonly command: string;
   readonly args: readonly string[];
-  /** Absent when the server needs no env vars at all (e.g. the filesystem server). */
-  readonly credential: EncryptedUpstreamCredential | null;
 }

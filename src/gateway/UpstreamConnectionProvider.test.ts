@@ -32,15 +32,10 @@ test("connect() never exposes the gateway process's own secrets to a spawned ups
   try {
     const vault = new CredentialVault(Buffer.alloc(32, 1));
     const provider = new PerSessionUpstreamConnectionProvider(vault);
-    const server: UpstreamServer = {
-      id: "test-server",
-      name: "echo-env-test",
-      command: "node",
-      args: [FIXTURE_PATH],
-      credential: vault.encrypt(JSON.stringify({ FAKE_UPSTREAM_TOKEN: "legitimate-value" })),
-    };
+    const server: UpstreamServer = { id: "test-server", name: "echo-env-test", command: "node", args: [FIXTURE_PATH] };
+    const credential = vault.encrypt(JSON.stringify({ FAKE_UPSTREAM_TOKEN: "legitimate-value" }));
 
-    const { client, close } = await provider.connect(server);
+    const { client, close } = await provider.connect(server, credential);
     try {
       const result = await client.callTool("echo_env", {});
       const childEnv = JSON.parse((result.content as unknown as { text: string }[])[0].text) as Record<string, string>;

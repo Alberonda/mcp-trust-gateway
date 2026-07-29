@@ -17,7 +17,7 @@ async function main(): Promise<void> {
 
   const { userId, apiKey } = await provisionUserWithIdentity(client, "test-identity");
 
-  const server = await registerServer(client, config.encryptionKey, {
+  const server = await registerServer(client, {
     name: "filesystem",
     command: "npx",
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/mcp-test-sandbox"],

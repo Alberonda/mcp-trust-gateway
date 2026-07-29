@@ -2,22 +2,22 @@ import type { Queryable } from "./Queryable.js";
 import type { EncryptedUpstreamCredential } from "./types.js";
 
 /**
- * Per-(user, server) credential overrides — see migrations/005_user_credentials.sql for
- * the full rationale. Deliberately a separate table/repository from `upstream_servers`
- * rather than a new column there: a server has at most one *default* credential, but any
- * number of users can each have their own override for it, so this is a genuinely
- * different cardinality, not just an optional extra field.
+ * Every credential for talking to a real upstream server — per (user, server), with no
+ * server-level default anywhere else to fall back to (see
+ * migrations/006_remove_shared_upstream_credential.sql). Every user, including whoever
+ * first registers a server, stores their own credential here the same way — there is no
+ * privileged "default" user.
  */
 export interface UserCredentialRepository {
-  /** The user's own credential for this server, or null if they have none (callers fall
-   *  back to the server's own default — see PerUserCredentialResolver). */
-  findOverride(userId: string, serverId: string): Promise<EncryptedUpstreamCredential | null>;
+  /** This user's own credential for this server, or null if they have none (they simply
+   *  can't use this server if it needs one — there is nothing to fall back to). */
+  find(userId: string, serverId: string): Promise<EncryptedUpstreamCredential | null>;
 
   /** Sets (or replaces) this user's own credential for this server. */
   upsert(userId: string, serverId: string, credential: EncryptedUpstreamCredential): Promise<void>;
 
-  /** Removes this user's override, reverting them to the server's own default (if any).
-   *  Idempotent — removing a row that doesn't exist is not an error. */
+  /** Removes this user's credential for this server. Idempotent — removing a row that
+   *  doesn't exist is not an error. */
   remove(userId: string, serverId: string): Promise<void>;
 }
 
@@ -30,7 +30,7 @@ interface UserCredentialRow {
 export class PostgresUserCredentialRepository implements UserCredentialRepository {
   constructor(private readonly db: Queryable) {}
 
-  async findOverride(userId: string, serverId: string): Promise<EncryptedUpstreamCredential | null> {
+  async find(userId: string, serverId: string): Promise<EncryptedUpstreamCredential | null> {
     const { rows } = await this.db.query<UserCredentialRow>(
       `SELECT encrypted_credential AS "encryptedCredential",
               credential_iv AS "credentialIv",

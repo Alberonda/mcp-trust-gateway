@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   const client = new pg.Client({ connectionString: config.databaseUrl });
   await client.connect();
 
-  const server = await registerServer(client, config.encryptionKey, {
+  const server = await registerServer(client, {
     name: "personal-sandbox",
     command: "npx",
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/AREYESM/mcp-gateway-sandbox"],

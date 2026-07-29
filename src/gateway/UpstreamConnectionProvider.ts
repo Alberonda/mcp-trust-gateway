@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { UpstreamServer } from "../db/types.js";
+import type { EncryptedUpstreamCredential, UpstreamServer } from "../db/types.js";
 import type { CredentialVault } from "../security/vault.js";
 import type { ToolCallResult, UpstreamToolClient } from "./UpstreamToolClient.js";
 
@@ -11,7 +11,10 @@ export interface ConnectedUpstream {
 }
 
 export interface UpstreamConnectionProvider {
-  connect(server: UpstreamServer): Promise<ConnectedUpstream>;
+  /** `credential` is resolved by the caller (see db/UserCredentialRepository.ts) — this
+   *  provider has no opinion on *whose* credential it is, only how to use one to spawn a
+   *  server. Pass null for a server that needs no env at all. */
+  connect(server: UpstreamServer, credential: EncryptedUpstreamCredential | null): Promise<ConnectedUpstream>;
 }
 
 /**
@@ -29,8 +32,8 @@ export interface UpstreamConnectionProvider {
 export class PerSessionUpstreamConnectionProvider implements UpstreamConnectionProvider {
   constructor(private readonly vault: CredentialVault) {}
 
-  async connect(server: UpstreamServer): Promise<ConnectedUpstream> {
-    const decryptedEnv = server.credential ? this.decryptEnv(server) : undefined;
+  async connect(server: UpstreamServer, credential: EncryptedUpstreamCredential | null): Promise<ConnectedUpstream> {
+    const decryptedEnv = credential ? this.decryptEnv(server.name, credential) : undefined;
 
     const client = new Client({ name: "mcp-trust-gateway", version: "0.1.0" });
     await client.connect(
@@ -61,16 +64,16 @@ export class PerSessionUpstreamConnectionProvider implements UpstreamConnectionP
   }
 
   /** The stored credential decrypts to a JSON-serialized map of every env var this server
-   *  needs (see db/types.ts's UpstreamServer doc) — not a single opaque secret. A parse
-   *  failure here means the stored data is corrupt or predates this format, which is
-   *  worth failing loudly on rather than silently spawning the server with no env at all. */
-  private decryptEnv(server: UpstreamServer): Record<string, string> {
-    const plaintext = this.vault.decrypt(server.credential!);
+   *  needs (see db/types.ts's EncryptedUpstreamCredential doc) — not a single opaque
+   *  secret. A parse failure here means the stored data is corrupt, which is worth
+   *  failing loudly on rather than silently spawning the server with no env at all. */
+  private decryptEnv(serverName: string, credential: EncryptedUpstreamCredential): Record<string, string> {
+    const plaintext = this.vault.decrypt(credential);
     try {
       return JSON.parse(plaintext) as Record<string, string>;
     } catch (error) {
       throw new Error(
-        `Stored env for upstream server "${server.name}" is not valid JSON — expected a {"KEY":"value"} map. ` +
+        `Stored env for upstream server "${serverName}" is not valid JSON — expected a {"KEY":"value"} map. ` +
           `Original error: ${error instanceof Error ? error.message : String(error)}`,
       );
     }

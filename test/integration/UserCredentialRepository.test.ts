@@ -5,26 +5,26 @@ import { withTransaction } from "./setupDatabase.js";
 import { seedServer, seedUserAndIdentity } from "./testFixtures.js";
 
 test(
-  "findOverride returns null when the user has no override for that server",
+  "find returns null when the user has no credential for that server",
   withTransaction(async ({ db }) => {
     const { userId } = await seedUserAndIdentity(db, "alice");
     const serverId = await seedServer(db, "github");
 
-    const override = await new PostgresUserCredentialRepository(db).findOverride(userId, serverId);
+    const credential = await new PostgresUserCredentialRepository(db).find(userId, serverId);
 
-    assert.equal(override, null);
+    assert.equal(credential, null);
   }),
 );
 
 test(
-  "upsert then findOverride round-trips the encrypted fields byte-for-byte",
+  "upsert then find round-trips the encrypted fields byte-for-byte",
   withTransaction(async ({ db }) => {
     const { userId } = await seedUserAndIdentity(db, "alice");
     const serverId = await seedServer(db, "github");
     const credential = { ciphertext: Buffer.from("alice-cipher"), iv: Buffer.from("alice-iv-12b"), authTag: Buffer.from("alice-auth-tag16") };
 
     await new PostgresUserCredentialRepository(db).upsert(userId, serverId, credential);
-    const found = await new PostgresUserCredentialRepository(db).findOverride(userId, serverId);
+    const found = await new PostgresUserCredentialRepository(db).find(userId, serverId);
 
     assert.ok(found);
     assert.ok(credential.ciphertext.equals(found.ciphertext));
@@ -34,7 +34,7 @@ test(
 );
 
 test(
-  "upsert replaces an existing override in place rather than creating a second row",
+  "upsert replaces an existing credential in place rather than creating a second row",
   withTransaction(async ({ db }) => {
     const { userId } = await seedUserAndIdentity(db, "alice");
     const serverId = await seedServer(db, "github");
@@ -49,13 +49,13 @@ test(
       [userId, serverId],
     );
     assert.equal(rows[0].count, "1");
-    const found = await repo.findOverride(userId, serverId);
+    const found = await repo.find(userId, serverId);
     assert.ok(newCredential.ciphertext.equals(found!.ciphertext));
   }),
 );
 
 test(
-  "two different users can each have their own override for the same server",
+  "two different users can each have their own credential for the same server",
   withTransaction(async ({ db }) => {
     const alice = await seedUserAndIdentity(db, "alice");
     const bob = await seedUserAndIdentity(db, "bob");
@@ -67,15 +67,15 @@ test(
     await repo.upsert(alice.userId, serverId, aliceCredential);
     await repo.upsert(bob.userId, serverId, bobCredential);
 
-    const aliceFound = await repo.findOverride(alice.userId, serverId);
-    const bobFound = await repo.findOverride(bob.userId, serverId);
+    const aliceFound = await repo.find(alice.userId, serverId);
+    const bobFound = await repo.find(bob.userId, serverId);
     assert.ok(aliceCredential.ciphertext.equals(aliceFound!.ciphertext));
     assert.ok(bobCredential.ciphertext.equals(bobFound!.ciphertext));
   }),
 );
 
 test(
-  "remove() reverts the user to having no override, and is a harmless no-op if none existed",
+  "remove() reverts the user to having no credential for that server, and is a harmless no-op if none existed",
   withTransaction(async ({ db }) => {
     const { userId } = await seedUserAndIdentity(db, "alice");
     const serverId = await seedServer(db, "github");
@@ -85,6 +85,6 @@ test(
     await repo.remove(userId, serverId);
     await repo.remove(userId, serverId); // second call must not throw
 
-    assert.equal(await repo.findOverride(userId, serverId), null);
+    assert.equal(await repo.find(userId, serverId), null);
   }),
 );

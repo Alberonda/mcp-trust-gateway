@@ -19,12 +19,12 @@ async function main(): Promise<void> {
   const client = new pg.Client({ connectionString: config.databaseUrl });
   await client.connect();
 
-  const serverA = await registerServer(client, config.encryptionKey, {
+  const serverA = await registerServer(client, {
     name: "sandbox-a",
     command: "npx",
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/mcp-test-sandbox-a"],
   });
-  const serverB = await registerServer(client, config.encryptionKey, {
+  const serverB = await registerServer(client, {
     name: "sandbox-b",
     command: "npx",
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/mcp-test-sandbox-b"],

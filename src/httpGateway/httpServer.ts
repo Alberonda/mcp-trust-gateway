@@ -25,8 +25,8 @@ import type { SessionRepository } from "../db/SessionRepository.js";
 import { PostgresUpstreamServerRepository } from "../db/UpstreamServerRepository.js";
 import type { UpstreamServerRepository } from "../db/UpstreamServerRepository.js";
 import { PostgresUserCredentialRepository } from "../db/UserCredentialRepository.js";
+import type { UserCredentialRepository } from "../db/UserCredentialRepository.js";
 import type { Identity } from "../db/types.js";
-import { PerUserCredentialResolver } from "../gateway/PerUserCredentialResolver.js";
 import { ToolCallHandler } from "../gateway/ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "../gateway/ToolDiscoveryRouter.js";
 import { PerSessionUpstreamConnectionProvider } from "../gateway/UpstreamConnectionProvider.js";
@@ -71,7 +71,7 @@ interface Dependencies {
   readonly auditLog: AuditLogRepository;
   readonly sessions: SessionRepository;
   readonly connectionProvider: UpstreamConnectionProvider;
-  readonly credentialResolver: PerUserCredentialResolver;
+  readonly userCredentials: UserCredentialRepository;
   readonly rateLimiter: RateLimiter;
   readonly sessionTtlMinutes: number;
 }
@@ -83,13 +83,15 @@ async function createMcpSession(identity: Identity, deps: Dependencies): Promise
     throw new HttpStatusError(403, `Identity "${identity.name}" has no permission grants on any upstream server.`);
   }
 
-  // Each user's own credential for a server, if they have one — see
-  // PerUserCredentialResolver's docstring for why a shared server row must never mean
-  // every user shares one person's personal access token.
-  const resolvedServers = await Promise.all(accessibleServers.map((server) => deps.credentialResolver.resolve(server, identity.userId)));
-  const connectedUpstreams = await Promise.all(resolvedServers.map((server) => deps.connectionProvider.connect(server)));
+  // This user's OWN credential for each server, or null — there is no shared default to
+  // fall back to (see db/UserCredentialRepository.ts's docstring): a server row must
+  // never mean every user shares one person's personal access token.
+  const credentials = await Promise.all(accessibleServers.map((server) => deps.userCredentials.find(identity.userId, server.id)));
+  const connectedUpstreams = await Promise.all(
+    accessibleServers.map((server, i) => deps.connectionProvider.connect(server, credentials[i])),
+  );
   const handlers = connectedUpstreams.map(
-    ({ client }, i) => new ToolCallHandler(identity, resolvedServers[i], deps.permissions, deps.auditLog, client),
+    ({ client }, i) => new ToolCallHandler(identity, accessibleServers[i], deps.permissions, deps.auditLog, client),
   );
   const router = new ToolDiscoveryRouter(handlers, identity, deps.auditLog);
 
@@ -246,7 +248,7 @@ function buildDependencies(config: HttpGatewayConfig): Dependencies {
     identities: new PostgresIdentityRepository(pool),
     permissions: new PostgresPermissionRepository(pool),
     upstreamServers: new PostgresUpstreamServerRepository(pool),
-    credentialResolver: new PerUserCredentialResolver(new PostgresUserCredentialRepository(pool)),
+    userCredentials: new PostgresUserCredentialRepository(pool),
     auditLog: new SafeAuditLogRepository(new PostgresAuditLogRepository(pool)),
     sessions: new PostgresSessionRepository(pool),
     connectionProvider: new PerSessionUpstreamConnectionProvider(new CredentialVault(config.encryptionKey)),
