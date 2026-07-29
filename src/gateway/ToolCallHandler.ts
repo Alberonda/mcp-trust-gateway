@@ -23,12 +23,25 @@ export class ToolCallHandler {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** tools/list is intentionally not permission-gated — knowing a tool exists is not the
-   *  same as being allowed to call it (see the discovery-vs-permission distinction called
-   *  out in this project's research, DESIGN.md). Gating list calls per-identity is a
-   *  reasonable Phase 2 addition if it turns out to matter in practice. */
+  /** Which upstream server this handler talks to — used by ToolDiscoveryRouter to label
+   *  discovered tools and to route call_tool requests to the right handler. */
+  get serverName(): string {
+    return this.upstreamServer.name;
+  }
+
+  /** tools/list itself is not permission-gated at this level — knowing a tool exists is
+   *  not the same as being allowed to call it. ToolDiscoveryRouter is what actually
+   *  enforces per-tool visibility during discovery, via isToolAllowed() below. */
   async listTools(): Promise<unknown> {
     return this.upstreamClient.listTools();
+  }
+
+  /** Would callTool(toolName, ...) be allowed right now, without actually calling or
+   *  auditing anything? Used by ToolDiscoveryRouter to filter find_tool results down to
+   *  only what this identity could actually call — so discovery is exactly as strict as
+   *  calling, never a way to enumerate tools you have no access to. */
+  async isToolAllowed(toolName: string): Promise<boolean> {
+    return this.permissions.isCallAllowed(this.identity.id, this.upstreamServer.id, toolName);
   }
 
   async callTool(toolName: string, args: unknown): Promise<ToolCallResult> {

@@ -18,6 +18,9 @@ class FakePermissionRepository implements PermissionRepository {
   async isCallAllowed(): Promise<boolean> {
     return this.allowed;
   }
+  async findAccessibleServerIds(): Promise<string[]> {
+    return [];
+  }
 }
 
 class FakeAuditLogRepository implements AuditLogRepository {

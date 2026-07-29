@@ -11,7 +11,6 @@ export interface GatewayConfig {
   readonly databaseUrl: string;
   readonly encryptionKey: Buffer;
   readonly gatewayApiKey: string;
-  readonly upstreamServerName: string;
 }
 
 function requireEnv(name: string): string {
@@ -36,12 +35,16 @@ function parseEncryptionKey(hex: string): Buffer {
 
 /** Reads and validates every environment variable the gateway needs, once, at startup.
  *  Fails fast with a clear message instead of surfacing a confusing error deep inside
- *  some unrelated code path later. */
+ *  some unrelated code path later.
+ *
+ *  Note: as of Phase 2, which upstream servers to connect to is no longer configured via
+ *  an env var (there used to be an UPSTREAM_SERVER_NAME here) — it's derived from
+ *  PermissionRepository.findAccessibleServerIds() for the authenticated identity, so a
+ *  gateway process can reach every server that identity has any grant on, not just one. */
 export function loadConfig(): GatewayConfig {
   return Object.freeze({
     databaseUrl: requireEnv("DATABASE_URL"),
     encryptionKey: parseEncryptionKey(requireEnv("GATEWAY_ENCRYPTION_KEY")),
     gatewayApiKey: requireEnv("GATEWAY_API_KEY"),
-    upstreamServerName: requireEnv("UPSTREAM_SERVER_NAME"),
   });
 }

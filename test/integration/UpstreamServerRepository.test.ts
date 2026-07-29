@@ -49,3 +49,29 @@ test(
     assert.equal(server, null);
   }),
 );
+
+test(
+  "findManyByIds resolves several servers in one call, in no particular guaranteed order",
+  withTransaction(async ({ db }) => {
+    const {
+      rows: [a],
+    } = await db.query<{ id: string }>(`INSERT INTO upstream_servers (name, command) VALUES ('a', 'cmd-a') RETURNING id`);
+    const {
+      rows: [b],
+    } = await db.query<{ id: string }>(`INSERT INTO upstream_servers (name, command) VALUES ('b', 'cmd-b') RETURNING id`);
+    await db.query(`INSERT INTO upstream_servers (name, command) VALUES ('c', 'cmd-c')`); // deliberately not requested
+
+    const servers = await new PostgresUpstreamServerRepository(db).findManyByIds([a.id, b.id]);
+
+    assert.deepEqual(new Set(servers.map((s) => s.name)), new Set(["a", "b"]));
+  }),
+);
+
+test(
+  "findManyByIds returns an empty array for an empty input, without querying",
+  withTransaction(async ({ db }) => {
+    const servers = await new PostgresUpstreamServerRepository(db).findManyByIds([]);
+
+    assert.deepEqual(servers, []);
+  }),
+);
