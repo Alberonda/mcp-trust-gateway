@@ -886,6 +886,15 @@ which operators can move onto real shared roles afterward.
   `manage_roles` appeared afterward.
 - 129 tests total (78 unit + 51 integration), all green. Applied to both the local dev
   database and the Neon-hosted deployment.
+- **A real Render resource limit found while verifying against the live deployment**:
+  the first request after redeploying returned a real HTTP 500 (not a timeout this time)
+  for the identity that has permission on two servers needing subprocesses spawned at
+  once (`memory-demo` + `sonarqube`). Reproduced the exact same request locally against
+  the same Neon database — it worked correctly there, and the very next retry against
+  Render also succeeded. Points at Render's free-tier resource limits (likely memory)
+  under the cold-start cost of spawning two subprocesses simultaneously, not a code
+  defect — but worth remembering as a real constraint of the free tier specifically, not
+  a general finding about the architecture.
 
 ### Phase 4 (advanced, may not be worth doing — revisit after Phases 1-3 prove useful)
 - [ ] Rollback/checkpoint hooks for known-destructive operation types (file writes, DB
