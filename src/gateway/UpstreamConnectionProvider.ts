@@ -30,15 +30,14 @@ export class PerSessionUpstreamConnectionProvider implements UpstreamConnectionP
   constructor(private readonly vault: CredentialVault) {}
 
   async connect(server: UpstreamServer): Promise<ConnectedUpstream> {
-    const credential = server.credential ? this.vault.decrypt(server.credential) : undefined;
-    const [command, ...args] = server.command.split(" ");
+    const env = server.credential ? this.decryptEnv(server) : undefined;
 
     const client = new Client({ name: "mcp-trust-gateway", version: "0.1.0" });
     await client.connect(
       new StdioClientTransport({
-        command,
-        args,
-        env: credential ? { ...process.env, UPSTREAM_CREDENTIAL: credential } : undefined,
+        command: server.command,
+        args: [...server.args],
+        env: env ? ({ ...process.env, ...env } as Record<string, string>) : undefined,
       }),
     );
 
@@ -50,5 +49,21 @@ export class PerSessionUpstreamConnectionProvider implements UpstreamConnectionP
       },
       close: () => client.close(),
     };
+  }
+
+  /** The stored credential decrypts to a JSON-serialized map of every env var this server
+   *  needs (see db/types.ts's UpstreamServer doc) — not a single opaque secret. A parse
+   *  failure here means the stored data is corrupt or predates this format, which is
+   *  worth failing loudly on rather than silently spawning the server with no env at all. */
+  private decryptEnv(server: UpstreamServer): Record<string, string> {
+    const plaintext = this.vault.decrypt(server.credential!);
+    try {
+      return JSON.parse(plaintext) as Record<string, string>;
+    } catch (error) {
+      throw new Error(
+        `Stored env for upstream server "${server.name}" is not valid JSON — expected a {"KEY":"value"} map. ` +
+          `Original error: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 }

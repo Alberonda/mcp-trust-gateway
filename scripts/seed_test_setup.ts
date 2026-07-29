@@ -1,5 +1,7 @@
 import pg from "pg";
+import { loadBaseConfig } from "../src/config.js";
 import { provisionUserWithIdentity } from "./lib/provisionUser.js";
+import { registerServer } from "./lib/registerServer.js";
 
 /**
  * One-off helper to seed a test user/identity + upstream server + permission row so
@@ -9,20 +11,17 @@ import { provisionUserWithIdentity } from "./lib/provisionUser.js";
  */
 
 async function main(): Promise<void> {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) throw new Error("DATABASE_URL is not set.");
-
-  const client = new pg.Client({ connectionString });
+  const config = loadBaseConfig();
+  const client = new pg.Client({ connectionString: config.databaseUrl });
   await client.connect();
 
   const { userId, apiKey } = await provisionUserWithIdentity(client, "test-identity");
 
-  const {
-    rows: [server],
-  } = await client.query<{ id: string }>(`INSERT INTO upstream_servers (name, command) VALUES ($1, $2) RETURNING id`, [
-    "filesystem",
-    "npx -y @modelcontextprotocol/server-filesystem /tmp/mcp-test-sandbox",
-  ]);
+  const server = await registerServer(client, config.encryptionKey, {
+    name: "filesystem",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/mcp-test-sandbox"],
+  });
 
   await client.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [
     userId,

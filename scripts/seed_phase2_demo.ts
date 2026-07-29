@@ -1,5 +1,7 @@
 import pg from "pg";
+import { loadBaseConfig } from "../src/config.js";
 import { provisionUserWithIdentity } from "./lib/provisionUser.js";
+import { registerServer } from "./lib/registerServer.js";
 
 /**
  * One-off seed for manually demonstrating Phase 2's Claim A (governance across multiple
@@ -13,24 +15,20 @@ import { provisionUserWithIdentity } from "./lib/provisionUser.js";
  */
 
 async function main(): Promise<void> {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) throw new Error("DATABASE_URL is not set.");
-
-  const client = new pg.Client({ connectionString });
+  const config = loadBaseConfig();
+  const client = new pg.Client({ connectionString: config.databaseUrl });
   await client.connect();
 
-  const {
-    rows: [serverA],
-  } = await client.query<{ id: string }>(
-    `INSERT INTO upstream_servers (name, command) VALUES ($1, $2) RETURNING id`,
-    ["sandbox-a", "npx -y @modelcontextprotocol/server-filesystem /tmp/mcp-test-sandbox-a"],
-  );
-  const {
-    rows: [serverB],
-  } = await client.query<{ id: string }>(
-    `INSERT INTO upstream_servers (name, command) VALUES ($1, $2) RETURNING id`,
-    ["sandbox-b", "npx -y @modelcontextprotocol/server-filesystem /tmp/mcp-test-sandbox-b"],
-  );
+  const serverA = await registerServer(client, config.encryptionKey, {
+    name: "sandbox-a",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/mcp-test-sandbox-a"],
+  });
+  const serverB = await registerServer(client, config.encryptionKey, {
+    name: "sandbox-b",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/mcp-test-sandbox-b"],
+  });
 
   const narrow = await provisionUserWithIdentity(client, "narrow-agent");
   await client.query(`INSERT INTO permissions (user_id, server_id, tool_name) VALUES ($1, $2, NULL)`, [

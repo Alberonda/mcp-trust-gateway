@@ -156,17 +156,96 @@ connects to *every* server this API key's identity has any permission grant on, 
 from the `permissions` table, and exposes them all through the same two meta-tools
 (`find_tool`, `call_tool`). One MCP client entry, many governed servers behind it.
 
+### A real worked example (secrets redacted)
+
+Before adopting the gateway, a typical MCP client config lists every real server directly
+— each one reachable straight from the agent, ungoverned, with its own raw credentials
+sitting in the config file:
+
+```json
+{
+  "mcpServers": {
+    "jira": {
+      "command": "/bin/bash",
+      "args": ["/path/to/mcp-wrappers/jira-atlassian.sh"]
+    },
+    "github-mcp-server": {
+      "command": "/path/to/mcp-wrappers/github-enterprise.sh",
+      "args": []
+    },
+    "sonarqube": {
+      "command": "docker",
+      "args": ["run", "--init", "-i", "--rm", "-e", "SONARQUBE_TOKEN", "-e", "SONARQUBE_URL", "mcp/sonarqube-mb"],
+      "env": {
+        "SONARQUBE_TOKEN": "squ_...",
+        "SONARQUBE_URL": "https://sonarqube.example.com"
+      }
+    }
+  }
+}
+```
+
+After adding the gateway as one more entry (what's actually running today), those three
+are unchanged — the gateway doesn't replace them by itself, it's an additional, governed
+path for whatever real servers you register behind it (see "Operator tools" below for
+`personal-sandbox` and `memory-demo`, the two registered so far):
+
+```json
+{
+  "mcpServers": {
+    "jira": { "command": "/bin/bash", "args": ["/path/to/mcp-wrappers/jira-atlassian.sh"] },
+    "github-mcp-server": { "command": "/path/to/mcp-wrappers/github-enterprise.sh", "args": [] },
+    "sonarqube": {
+      "command": "docker",
+      "args": ["run", "--init", "-i", "--rm", "-e", "SONARQUBE_TOKEN", "-e", "SONARQUBE_URL", "mcp/sonarqube-mb"],
+      "env": { "SONARQUBE_TOKEN": "squ_...", "SONARQUBE_URL": "https://sonarqube.example.com" }
+    },
+    "trust-gateway": {
+      "command": "node",
+      "args": ["/path/to/mcp-trust-gateway/dist/index.js"],
+      "env": { "GATEWAY_API_KEY": "mtg_...", "DATABASE_URL": "postgres://...", "GATEWAY_ENCRYPTION_KEY": "..." }
+    }
+  }
+}
+```
+
+**Not done yet, but this is what it would look like**: migrating `jira`/`github-mcp-server`/
+`sonarqube` to be *registered servers behind the gateway* instead of standalone entries —
+each one's `{command, args, env}` becomes an `upstream_servers` row (see
+`scripts/lib/registerServer.ts`), and its config entry disappears entirely, leaving only:
+
+```json
+{
+  "mcpServers": {
+    "trust-gateway": {
+      "command": "node",
+      "args": ["/path/to/mcp-trust-gateway/dist/index.js"],
+      "env": { "GATEWAY_API_KEY": "mtg_...", "DATABASE_URL": "postgres://...", "GATEWAY_ENCRYPTION_KEY": "..." }
+    }
+  }
+}
+```
+
+That last step is deliberately staged, not automatic — moving a real, currently-working
+integration behind the gateway means testing that the gateway can actually spawn it
+correctly (Docker-based servers like SonarQube are more delicate than a plain `npx`
+command) *before* removing the standalone entry that currently works, not after.
+
 ## Operator tools
 
 Neither of these talks to a running gateway process — both connect to Postgres directly,
 so they work regardless of which deployment mode you're using.
 
 ```bash
-# Rotate a stored upstream server credential in place (same server id, only the secret changes)
+# Rotate every env var for an upstream server in place (same server id/name/args, only the
+# env changes) — pass the FULL env map the server needs, not just the one value that changed
 DATABASE_URL=... GATEWAY_ENCRYPTION_KEY=... \
-  npx tsx scripts/rotate_upstream_credential.ts <server-name> <new-plaintext-credential>
+  npx tsx scripts/rotate_upstream_credential.ts <server-name> '{"KEY":"new-value"}'
 
 # Query the audit trail — every filter is optional
 DATABASE_URL=... npx tsx scripts/view_audit_log.ts \
   [--identity=<name>] [--server=<name>] [--status=allowed_success|allowed_failure|denied] [--limit=<n>]
 ```
+
+Registering a new server (`scripts/lib/registerServer.ts`) uses the same `{command, args,
+env}` shape as any MCP client config — see the worked example above.
