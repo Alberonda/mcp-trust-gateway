@@ -1,4 +1,4 @@
-import type pg from "pg";
+import type { Queryable } from "./Queryable.js";
 import type { UpstreamServer } from "./types.js";
 
 export interface UpstreamServerRepository {
@@ -6,10 +6,10 @@ export interface UpstreamServerRepository {
 }
 
 export class PostgresUpstreamServerRepository implements UpstreamServerRepository {
-  constructor(private readonly pool: pg.Pool) {}
+  constructor(private readonly db: Queryable) {}
 
   async findByName(name: string): Promise<UpstreamServer | null> {
-    const { rows } = await this.pool.query<{
+    const { rows } = await this.db.query<{
       id: string;
       name: string;
       command: string;
