@@ -43,3 +43,29 @@ export const RESULT_SUMMARY_MAX_LENGTH = 200;
 
 /** Placeholder written over any field redact() identifies as secret-shaped. */
 export const REDACTED_PLACEHOLDER = "[REDACTED]";
+
+/** How long a server's cached tool_catalog entry is trusted before ToolDiscoveryRouter
+ *  refreshes it (opportunistically, off a connection that's happening anyway — see
+ *  ToolDiscoveryRouter.callTool). A week balances "don't connect on every single call
+ *  just to re-list tools that rarely change" against "notice a real upstream change in
+ *  a reasonable time" — see DESIGN.md's backlog entry for the fuller reasoning. */
+export const TOOL_CATALOG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The embedding model find_tool's semantic search runs locally, via
+ *  @huggingface/transformers — chosen specifically for being small (~90MB), CPU-only
+ *  (no GPU dependency), and genuinely fast (~1ms/embedding measured, not estimated) at
+ *  this project's real scale (tens of tools per server, not millions). */
+export const EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
+
+/** find_tool returns at most this many results for a non-empty query, ranked by
+ *  similarity across EVERY accessible server combined (not per server) — a global
+ *  top-K, not an absolute similarity cutoff. Tried an absolute cutoff first
+ *  (MIN_TOOL_SIMILARITY = 0.1) and found empirically, against a real ~90-tool catalog
+ *  (Jira + SonarQube + a filesystem server), that it barely filtered anything: sentence
+ *  embeddings for ordinary English text tend to share enough baseline structure that
+ *  even unrelated short strings often score >0.1, so a fixed cutoff let most of an
+ *  unrelated server's tools through. Top-K is the same fix real tool-retrieval systems
+ *  converge on (see DESIGN.md's backlog entry and its cited sources) — robust to that
+ *  baseline shift because it only compares candidates to each other, never to an
+ *  absolute number that has no fixed meaning across models/corpora. */
+export const MAX_FIND_TOOL_RESULTS = 10;

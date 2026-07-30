@@ -20,15 +20,17 @@ combination or require adopting a large platform.
 src/
   domain/       business logic + entities. Zero framework/infra imports — depends only
                 on ports/. ToolCallHandler, ToolDiscoveryRouter, SelfServiceHandler,
-                AdminToolHandler, connectAccessibleServers, types, constants, redact.
+                AdminToolHandler, buildAccessibleServerHandlers, cosineSimilarity,
+                extractToolSummaries, types, constants, redact.
   ports/        interfaces adapters must implement — one per storage concern
                 (*Repository), plus UpstreamToolClient, UpstreamConnectionProvider,
-                CredentialVault, RateLimiter, RelayAgentRegistry, Queryable.
+                CredentialVault, RateLimiter, RelayAgentRegistry, Embedder, Queryable.
   adapters/     concrete implementations, grouped by real technology:
-                postgres/ (one Postgres* class per port), mcp/ (subprocess spawning),
-                security/ (AES-256-GCM, api keys, session tokens), http/ (rate limiter),
-                relay/ (dispatches execution to a connected relay agent instead of
-                spawning locally — see "Relay agent" below).
+                postgres/ (one Postgres* class per port, including tool_catalog),
+                mcp/ (subprocess spawning), security/ (AES-256-GCM, api keys, session
+                tokens), http/ (rate limiter), embeddings/ (LocalEmbedder — see "Semantic
+                tool discovery" below), relay/ (dispatches execution to a connected relay
+                agent instead of spawning locally — see "Relay agent" below).
   entrypoints/  the two composition roots — the only code allowed to import both a port
                 and its concrete adapter and wire them together:
                 stdio/index.ts    one process, one identity, spawned locally by a client
@@ -48,14 +50,14 @@ Agent (Devin CLI, Claude Desktop, Cursor...)
    ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ 1. Resolve identity → user → union of every role they hold    │
-│ 2. Connect to every server that role access covers            │
-│    (local subprocess, or dispatched to a relay agent if the    │
-│    server is only reachable from a specific network)           │
+│ 2. Build one handler per accessible server — connects to      │
+│    NONE of them yet (see "Semantic tool discovery" below)      │
 │ 3. Expose a small fixed set of meta-tools regardless of how    │
 │    many real servers/tools sit behind it: find_tool, call_tool,│
 │    list_services, register_my_credential, manage_roles (admin) │
-│ 4. Per call: check permission → decrypt credential → forward → │
-│    write an audited, redacted log entry                        │
+│ 4. Per call: check permission → connect lazily (local          │
+│    subprocess, or dispatched to a relay agent) → decrypt        │
+│    credential → forward → write an audited, redacted log entry │
 └──────────────────────────────────────────────────────────────┘
    ▼
 Real MCP servers
@@ -63,6 +65,56 @@ Real MCP servers
 
 Requires no changes to the agent or to upstream MCP servers — point an existing
 MCP-compatible client's config at the gateway instead of directly at the real server.
+
+### Semantic tool discovery + lazy connection
+
+`find_tool` searches a *cached* `tool_catalog` table (name, description, embedding vector
+per tool) via cosine similarity, instead of connecting live to every accessible server on
+every session — see `ports/ToolCatalogRepository.ts` and `ports/Embedder.ts`.
+`adapters/embeddings/LocalEmbedder.ts` runs a small (~90MB) sentence-embedding model
+locally via `@huggingface/transformers` (measured ~1ms/embedding, no GPU, no external API
+call, no data ever leaving the machine — see that adapter's own docstring).
+
+- **The cache is what makes lazy connection possible, not the other way around.**
+  `buildAccessibleServerHandlers.ts` builds one `ToolCallHandler` per accessible server
+  without connecting to any of them; each handler's `UpstreamConnectionProvider` call is
+  deferred to a lazy, memoized closure invoked only on that handler's own first real use.
+  `ToolCallHandler.callTool` checks permission *before* ever invoking that closure — a
+  denied call never connects at all, which is the actual fix for "every accessible server
+  used to get a subprocess spawned for it at every session start, whether or not that
+  session ever used it."
+- A server with no cached catalog yet is the only case `find_tool` itself connects to
+  anything (to learn what it offers at all — there's no way around that once). Otherwise,
+  `call_tool`'s own connection opportunistically refreshes a stale entry
+  (`TOOL_CATALOG_TTL_MS`, a week) in the background, reusing the same connection it
+  already needed — never a second one just to refresh. `manage_roles`'s
+  `refresh_catalog({serverName})` is the manual escape hatch for "I know it changed, don't
+  wait for the TTL."
+- **`find_tool` returns a global top-K (`MAX_FIND_TOOL_RESULTS`, 10), not an absolute
+  similarity cutoff** — tried a cutoff first and found empirically, against a real ~90-
+  tool catalog (Jira + SonarQube), that it barely filtered anything: ordinary English
+  sentence embeddings share enough baseline structure that unrelated short strings often
+  score noticeably above a "low" fixed threshold, so a real query like "quality gate
+  sonar analysis" returned most of Jira's catalog alongside the genuinely relevant
+  SonarQube tools. Re-verified against the same real catalog after switching to top-K:
+  exactly 10 results, all SonarQube, topped by exact matches (`quality_gates`,
+  `quality_gate`, `quality_gate_status`) — see this constant's own docstring for the
+  research (LangChain's tool-retrieval pattern, the ToolReAGt paper, ToolScope/ToolScout)
+  that converged on the same top-K approach before this was built.
+- **Verified for real, twice**: once against the real Neon-backed deployment (Jira +
+  SonarQube + a filesystem server, ~90 real tools) before finding the threshold problem
+  above, and again after fixing it — the second `find_tool` call for the same query also
+  ran in under half the time of the first (2.8s vs 5.6s), confirming the catalog cache
+  is what made the second call skip reconnecting to anything.
+- A real dependency-security finding worth recording: `@huggingface/transformers`
+  pulled in transitive HIGH-severity advisories (`adm-zip` via `onnxruntime-node`,
+  `sharp`'s bundled libvips) — neither reachable from this project's actual usage
+  (`adm-zip` only runs inside onnxruntime-node's own install script against its own
+  release archives, never a foreign ZIP at runtime; `sharp` is transformers.js's *image*
+  input path, and this project only ever runs text pipelines) — fixed with `overrides`
+  pinning both to their patched versions (`adm-zip@0.6.0`, `sharp@0.35.0`) rather than
+  switching libraries, following the same fix a real, independently-published package
+  (`@graphorin/embedder-transformersjs`) documents for the identical advisory chain.
 
 ### Relay agent
 
@@ -97,7 +149,7 @@ request/response protocol instead of reusing MCP's shape.
 ## Current status
 
 Verified against real Postgres, real MCP servers, and a real deployment (Neon + Render) —
-not just intended behavior. 156 tests (101 unit, 51 integration, 4 e2e — see "Testing").
+not just intended behavior. 177 tests (116 unit, 57 integration, 4 e2e — see "Testing").
 
 - **Governance across multiple servers**: an identity only discovers/calls tools on
   servers its roles grant, enforced identically whether reached via `find_tool` or
@@ -105,6 +157,10 @@ not just intended behavior. 156 tests (101 unit, 51 integration, 4 e2e — see "
 - **Context cost stays flat**: `tools/list` exposes a small fixed meta-tool set
   regardless of how many real servers/tools sit behind it — 97.1% fewer tokens than a
   direct multi-server connection at N=2, measured with a real tokenizer.
+- **Semantic tool discovery, connecting to nothing until actually needed**: `find_tool`
+  ranks a cached catalog by local-embedding similarity (top-10 globally, not per server)
+  instead of connecting live to every accessible server every session — see "Semantic
+  tool discovery + lazy connection" above.
 - **Roles + self-service**: permissions are granted to roles; every user gets
   `list_services`/`register_my_credential` (see own credential status, register their
   own — never grants permission itself); an `admin` role additionally gets `manage_roles`,
@@ -133,64 +189,38 @@ for the schema itself.
 ## Backlog
 
 **Design/architecture**
-- [ ] **`find_tool`/connection design, scoped 2026-07-29** — two related gaps found in
-      the same conversation, with one fix for both:
-      1. `find_tool` only does substring matching — no synonyms/semantic search.
-      2. Every accessible server is connected (subprocess spawned) at session start,
-         for every session, even if that session only ever ends up calling one of them
-         — necessary today because `find_tool` needs to call `listTools()` on a live
-         connection to know what a server offers before it can search across them.
-
-      **Researched how real tool-heavy agent systems solve this** (LangChain's own
-      "tool retrieval" pattern, the ToolReAGt paper (ACL 2025), and OSS projects
-      ToolScope/ToolScout/tool-selector-cascade) — all converge on the same cascade:
-      embeddings + cosine similarity as a cheap first filter (~20ms, local, ~$0),
-      escalating to a reranker or a micro-LLM only past ~hundreds-to-thousands of
-      tools. At this project's real scale (tens of tools per role), only the first
-      stage is justified — a reranker/LLM stage would be pure overhead here.
-
-      **Proposed design**: decouple *knowing what a server offers* from *being
-      connected to it*.
-      - A `tool_catalog` table: one row per (server, tool) — name, description, and an
-        embedding vector, plus when it was last refreshed.
-      - Populated lazily, as a side effect of a connection that would have happened
-        anyway (a server needing a credential has no shared default to catalog it
-        with up front — see "Remove the shared default upstream credential" — so the
-        first user who successfully connects with their own credential builds it;
-        the catalog itself — names/descriptions — isn't sensitive and doesn't need to
-        be scoped to who built it). Credential-less servers can be cataloged
-        immediately on registration.
-      - Refreshed opportunistically: whenever `call_tool` connects to a server for
-        real (which already happens), refresh its catalog entry if missing or older
-        than a TTL (a week, say) — no new scheduler/cron process needed. A manual
-        `refresh_catalog` admin action covers "I know it changed, don't wait."
-      - `find_tool` embeds the query and searches the cache directly — zero
-        connections. `call_tool` becomes the *only* thing that ever connects, lazily,
-        to exactly the one server it needs — this is what actually fixes gap 2, as a
-        consequence of fixing gap 1 correctly, not a separate change.
-      - Embeddings: a small local model (`all-MiniLM-L6-v2` class, ~90MB) via
-        `@xenova/transformers` (pure JS/WASM, no Python, no GPU needed) — not an
-        external API (would add a mandatory network call + secret to a path that
-        runs on every query, and break offline/stdio use) and not a full LLM (this is
-        a textbook embedding-similarity task; an LLM would be slower and costlier for
-        no quality gain at this scale).
-      - Real tradeoff accepted: connections drop from "every accessible server, every
-        session" to "once per server, refreshed occasionally" — not to zero. There's
-        no way to know what a server offers without ever having connected to it.
-      - Not yet decided: exact TTL, whether embeddings run inline in
-        `entrypoints/http/httpServer.ts`/`entrypoints/stdio/index.ts` or a small
-        dedicated module, and whether `pgvector` is worth adding for indexed search
-        versus a plain in-memory linear scan (likely fine at this project's scale —
-        tens to low hundreds of cached tools, not millions).
+- [x] ~~`find_tool` only does substring matching, no semantic search~~ — done, see
+      "Semantic tool discovery + lazy connection" above.
+- [x] ~~Every accessible server connected at session start regardless of use~~ — done,
+      same section (this fell out of the semantic-search change, not a separate one —
+      connecting lazily was only possible once discovery stopped needing a live
+      connection to search).
 - [ ] TOCTOU window: a mid-flight permission revoke doesn't stop a call already in flight.
 - [ ] No per-server error isolation for HTTP mode's relay path specifically — the local
-      path already isolates failures (`connectAccessibleServers.ts`); relay dispatch
-      failures should degrade the same way.
-- [ ] No connection pooling — each session opens its own subprocess even if another
-      identity is already connected to the same server.
+      path already isolates failures naturally now (a lazy connection failure only ever
+      affects the one call that triggered it); relay dispatch failures should behave the
+      same way, not yet verified specifically.
+- [ ] No connection pooling — each session that actually uses a server opens its own
+      subprocess even if another identity is already connected to the same one.
 - [ ] No master-key rotation path (only one server's stored credential at a time).
 - [ ] Only one relay agent supported at a time; no admin visibility into which agents are
       connected or which servers currently have one.
+- [ ] **A real profiler, not just the one-off `measure_context_overhead.ts` script** —
+      raised 2026-07-30 while verifying the semantic-search change. Two genuinely
+      different things worth measuring, currently conflated:
+      1. Token savings — `measure_context_overhead.ts` still only measures the ORIGINAL
+         claim (fixed meta-tool set vs. every real tool's schema). It doesn't yet measure
+         `find_tool`'s NEW behavior: a top-10 semantic result is itself far smaller than
+         returning every permitted tool unranked, and that gap only grows with catalog
+         size — worth measuring for real once there's a deployment with a genuinely large
+         combined catalog (more real tools than Jira+SonarQube's ~90 already used here).
+      2. Resource consumption — embedding latency/memory are measured once, informally
+         (see `adapters/embeddings/LocalEmbedder.ts`'s docstring), not tracked
+         continuously. Worth a real profiler once this runs somewhere with actual
+         production load patterns to profile — building one against today's single-user
+         manual testing would mostly measure noise, not anything real.
+      Not blocking anything today; revisit once there's real multi-user traffic and/or a
+      larger combined tool catalog to make the measurement meaningful.
 
 **Production readiness**
 - [ ] No automated tests for HTTP mode's own composition root wiring (only stdio mode's,

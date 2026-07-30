@@ -2,7 +2,12 @@ import type { RoleRepository } from "../ports/RoleRepository.js";
 import type { UpstreamServerRepository } from "../ports/UpstreamServerRepository.js";
 import type { UserCredentialRepository } from "../ports/UserCredentialRepository.js";
 import type { UserRepository } from "../ports/UserRepository.js";
+import type { Embedder } from "../ports/Embedder.js";
+import type { NewToolCatalogEntry, ToolCatalogRepository } from "../ports/ToolCatalogRepository.js";
+import type { UpstreamConnectionProvider } from "../ports/UpstreamConnectionProvider.js";
 import type { ToolCallResult } from "../ports/UpstreamToolClient.js";
+import type { Identity } from "./types.js";
+import { extractToolSummaries } from "./extractToolSummaries.js";
 
 /**
  * Backs the manage_roles meta-tool — only ever exposed to identities whose user holds an
@@ -22,7 +27,8 @@ type AdminAction =
   | "list_roles"
   | "list_users"
   | "delete_user"
-  | "delete_credential";
+  | "delete_credential"
+  | "refresh_catalog";
 
 function textResult(text: string): ToolCallResult {
   return { content: [{ type: "text", text }] };
@@ -38,6 +44,13 @@ export class AdminToolHandler {
     private readonly users: UserRepository,
     private readonly upstreamServers: UpstreamServerRepository,
     private readonly userCredentials: UserCredentialRepository,
+    /** Only needed by refresh_catalog — connects using the admin's OWN credential for
+     *  the server being refreshed (no exception to "no shared default credential" here
+     *  either — see UserCredentialRepository's docstring). */
+    private readonly connectionProvider: UpstreamConnectionProvider,
+    private readonly toolCatalog: ToolCatalogRepository,
+    private readonly embedder: Embedder,
+    private readonly identity: Identity,
   ) {}
 
   async handle(action: string, params: Record<string, unknown>): Promise<ToolCallResult> {
@@ -58,9 +71,12 @@ export class AdminToolHandler {
         return this.deleteUser(params);
       case "delete_credential":
         return this.deleteCredential(params);
+      case "refresh_catalog":
+        return this.refreshCatalog(params);
       default:
         return errorResult(
-          `Unknown action "${action}". Valid actions: create_role, delete_role, assign_role, unassign_role, list_roles, list_users, delete_user, delete_credential.`,
+          `Unknown action "${action}". Valid actions: create_role, delete_role, assign_role, unassign_role, ` +
+            "list_roles, list_users, delete_user, delete_credential, refresh_catalog.",
         );
     }
   }
@@ -138,5 +154,44 @@ export class AdminToolHandler {
     if (!server) return errorResult(`No server named "${serverName}".`);
     await this.userCredentials.remove(user.id, server.id);
     return textResult(`Deleted "${userName}"'s credential for "${serverName}". Their permission (if any) is unaffected.`);
+  }
+
+  /** Forces a rebuild of one server's cached tool_catalog — the manual escape hatch for
+   *  "I know the real server's tools changed, don't wait for the TTL" (see
+   *  ToolDiscoveryRouter's opportunistic refresh for the automatic path). Connects using
+   *  this admin's OWN credential for the server, same as any other real connection —
+   *  fails with a clear message if they don't have one, rather than silently using
+   *  someone else's. */
+  private async refreshCatalog(params: Record<string, unknown>): Promise<ToolCallResult> {
+    const serverName = params.serverName;
+    if (typeof serverName !== "string" || !serverName) return errorResult('refresh_catalog requires a "serverName" string.');
+    const server = await this.upstreamServers.findByName(serverName);
+    if (!server) return errorResult(`No server named "${serverName}".`);
+
+    let connected;
+    try {
+      const credential = await this.userCredentials.find(this.identity.userId, server.id);
+      connected = await this.connectionProvider.connect(server, credential);
+    } catch (error) {
+      return errorResult(
+        `Could not connect to "${serverName}" to refresh its catalog (using your own credential, if any): ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+    }
+
+    try {
+      const summaries = extractToolSummaries(await connected.client.listTools());
+      const entries: NewToolCatalogEntry[] = await Promise.all(
+        summaries.map(async (tool) => ({
+          toolName: tool.name,
+          description: tool.description,
+          embedding: await this.embedder.embed(`${tool.name}: ${tool.description}`),
+        })),
+      );
+      await this.toolCatalog.replaceForServer(server.id, entries);
+      return textResult(`Refreshed the tool catalog for "${serverName}": ${entries.length} tool(s) cataloged.`);
+    } finally {
+      await connected.close();
+    }
   }
 }

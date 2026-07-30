@@ -10,15 +10,16 @@ import { PostgresPermissionRepository } from "../../adapters/postgres/Permission
 import { createPool } from "../../adapters/postgres/pool.js";
 import { PostgresRoleRepository } from "../../adapters/postgres/RoleRepository.js";
 import { SafeAuditLogRepository } from "../../domain/SafeAuditLogRepository.js";
+import { PostgresToolCatalogRepository } from "../../adapters/postgres/ToolCatalogRepository.js";
 import { PostgresUpstreamServerRepository } from "../../adapters/postgres/UpstreamServerRepository.js";
 import { PostgresUserCredentialRepository } from "../../adapters/postgres/UserCredentialRepository.js";
 import { PostgresUserRepository } from "../../adapters/postgres/UserRepository.js";
 import { AdminToolHandler } from "../../domain/AdminToolHandler.js";
-import { connectAccessibleServers } from "../../domain/connectAccessibleServers.js";
+import { buildAccessibleServerHandlers } from "../../domain/buildAccessibleServerHandlers.js";
 import { SelfServiceHandler } from "../../domain/SelfServiceHandler.js";
-import { ToolCallHandler } from "../../domain/ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "../../domain/ToolDiscoveryRouter.js";
 import { PerSessionUpstreamConnectionProvider } from "../../adapters/mcp/UpstreamConnectionProvider.js";
+import { LocalEmbedder } from "../../adapters/embeddings/LocalEmbedder.js";
 import { hashApiKey } from "../../adapters/security/apiKeys.js";
 import { AesGcmCredentialVault } from "../../adapters/security/CredentialVault.js";
 
@@ -51,6 +52,8 @@ async function main(): Promise<void> {
   const vault = new AesGcmCredentialVault(config.encryptionKey);
   const connectionProvider = new PerSessionUpstreamConnectionProvider(vault);
   const userCredentials = new PostgresUserCredentialRepository(pool);
+  const toolCatalog = new PostgresToolCatalogRepository(pool);
+  const embedder = new LocalEmbedder();
 
   const identity = await identities.findByApiKeyHash(hashApiKey(config.gatewayApiKey));
   if (!identity) {
@@ -64,18 +67,22 @@ async function main(): Promise<void> {
   const accessibleServerIds = await permissions.findAccessibleServerIds(identity.userId);
   const accessibleServers = await upstreamServers.findManyByIds(accessibleServerIds);
 
-  // Isolated per server — one misconfigured server (e.g. missing credentials) must never
-  // prevent connecting to every OTHER accessible server too (see
-  // gateway/connectAccessibleServers.ts's docstring for the real incident that found this).
-  const connectedServers = await connectAccessibleServers(accessibleServers, identity.userId, userCredentials, connectionProvider);
-  const handlers = connectedServers.map(
-    ({ server, connected: { client } }) => new ToolCallHandler(identity, server, permissions, auditLog, client),
+  // Connects to nothing yet — each handler connects lazily on its own first real use
+  // (find_tool's cache miss, or call_tool), see buildAccessibleServerHandlers's docstring
+  // for why this replaced an eager connect-everything-up-front step.
+  const { handlers, closeAll } = buildAccessibleServerHandlers(
+    accessibleServers,
+    identity,
+    userCredentials,
+    connectionProvider,
+    permissions,
+    auditLog,
   );
   const selfService = new SelfServiceHandler(identity.userId, permissions, upstreamServers, userCredentials, vault);
   const adminHandler = (await roles.isUserAdmin(identity.userId))
-    ? new AdminToolHandler(roles, users, upstreamServers, userCredentials)
+    ? new AdminToolHandler(roles, users, upstreamServers, userCredentials, connectionProvider, toolCatalog, embedder, identity)
     : undefined;
-  const router = new ToolDiscoveryRouter(handlers, identity, auditLog, selfService, adminHandler);
+  const router = new ToolDiscoveryRouter(handlers, identity, auditLog, selfService, toolCatalog, embedder, adminHandler);
 
   // ToolDiscoveryRouter/ToolCallHandler intentionally return the plain, minimal shapes
   // they need (see gateway/UpstreamToolClient.ts) rather than depending on the SDK's much
@@ -88,6 +95,12 @@ async function main(): Promise<void> {
     CallToolRequestSchema,
     async (request) => (await router.handleMetaToolCall(request.params.name, request.params.arguments)) as ServerResult,
   );
+
+  const shutdown = (): void => {
+    void closeAll().finally(() => process.exit(0));
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 
   await server.connect(new StdioServerTransport());
 }
