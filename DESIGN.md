@@ -203,6 +203,18 @@ for the schema itself.
 - [ ] No connection pooling — each session that actually uses a server opens its own
       subprocess even if another identity is already connected to the same one.
 - [ ] No master-key rotation path (only one server's stored credential at a time).
+- [ ] **No detection for a mismatched `GATEWAY_ENCRYPTION_KEY` across machines in stdio
+      mode** — raised 2026-07-30 in conversation. `GATEWAY_ENCRYPTION_KEY` is deployment-
+      wide (one shared `DATABASE_URL`), not per-machine or per-user, but nothing stops
+      someone from generating a *new* one on a second machine instead of copying the
+      existing one — that machine would then fail to decrypt every credential saved
+      from the first, with no clear error pointing at the actual cause (AES-GCM's auth-
+      tag check just throws generically on the wrong key, same as on tampered
+      ciphertext — see `AesGcmCredentialVault.decrypt`'s docstring). README now warns
+      about this explicitly; a real fix would need a way to positively verify "is this
+      the same key this data was encrypted with" independent of a specific row (e.g. a
+      known-plaintext canary value stored once at first setup) so the error message
+      could say so specifically instead of just "decryption failed."
 - [ ] Only one relay agent supported at a time; no admin visibility into which agents are
       connected or which servers currently have one.
 - [x] ~~A real profiler, not just the one-off `measure_context_overhead.ts` script~~ —
