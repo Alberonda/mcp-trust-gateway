@@ -217,6 +217,38 @@ for the schema itself.
       could say so specifically instead of just "decryption failed."
 - [ ] Only one relay agent supported at a time; no admin visibility into which agents are
       connected or which servers currently have one.
+- [ ] **MCP's 2026-07-28 spec retires protocol-level sessions — HTTP mode is built
+      entirely around them.** Raised 2026-07-30 in conversation, checked against the
+      real spec announcement and the SDK's own migration docs before concluding
+      anything, not just from the blog post's headline. The new stateless core (no
+      `initialize`/`Mcp-Session-Id`, every request self-describing) lives in an entirely
+      SEPARATE new package family (`@modelcontextprotocol/server@2.0.0`,
+      `@modelcontextprotocol/client@2.0.0`, `@modelcontextprotocol/core@2.0.0`, ...) —
+      NOT `@modelcontextprotocol/sdk` (v1.x), which is what this project depends on
+      today (pinned at 1.29.0; 1.30.0 exists and is bug fixes only, no spec-2026-07-28
+      support). Per the SDK's own migration guide, a v1 sessionful HTTP server (what
+      `entrypoints/http/httpServer.ts` is) keeps serving 2025-era clients indefinitely
+      via an explicit backward-compat bridge (`legacy: 'reject'` + `isLegacyRequest`),
+      and stdio mode (a hand-built `Server` + `StdioServerTransport`) is entirely
+      unaffected regardless of SDK version — "upgrading the SDK changes nothing about
+      what it puts on the wire" for that transport. Nothing is broken today; no forced
+      migration deadline exists yet (any real deprecation gets a 12-month minimum
+      window per the spec's own new deprecation policy).
+      - **Not a threat to the actual premise**: RBAC/audit/credential-vault/semantic-
+        discovery are orthogonal to the wire protocol's session model — none of it
+        depends on where session state lives.
+      - **Arguably validates a piece of this project's own recent work**: the new spec
+        adds `ttlMs`/`cacheScope` to `tools/list` responses — the ecosystem converging
+        on the same "cache list results with a TTL" pattern this project just built
+        itself (`tool_catalog` + `TOOL_CATALOG_TTL_MS`), independently and earlier.
+      - **Real future work, not urgent**: moving `entrypoints/http/httpServer.ts`'s
+        connection/handler state off protocol-level sessions (the spec's own suggested
+        replacement — mint a handle, have the client pass it back as a tool argument —
+        maps reasonably well onto `call_tool`'s existing explicit `{server, tool}`
+        arguments) would be needed to ever adopt the new stateless core and its real
+        payoff (plain round-robin load balancing without shared session storage) —
+        worth real design work if/when horizontal scaling of HTTP mode actually matters,
+        not before.
 - [x] ~~A real profiler, not just the one-off `measure_context_overhead.ts` script~~ —
       done 2026-07-30: `scripts/benchmark_gateway_overhead.ts`. Real sessions (not
       synthetic data) against real Jira/SonarQube, read-only tools only, across 4

@@ -4,10 +4,6 @@ function label(session: SessionResult): string {
   return `${session.scenario} · ${session.serverCount} srv · ${session.language}`;
 }
 
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 function average(values: readonly number[]): number | undefined {
   return values.length === 0 ? undefined : values.reduce((a, b) => a + b, 0) / values.length;
 }
@@ -151,66 +147,61 @@ function computeFindings(results: readonly SessionResult[]): Finding[] {
   return findings;
 }
 
-/** A single self-contained HTML file (Chart.js loaded from a CDN, data inlined) — open it
- *  directly in a browser, no server or build step needed. See
- *  scripts/benchmark_gateway_overhead.ts for what produces the data this renders. */
+const VERDICT_ICON = { good: "✅", bad: "⚠️", neutral: "ℹ️" } as const;
+
+const BAR_WIDTH = 30;
+
+/** A crude but genuinely readable-in-a-diff bar chart using block characters — no
+ *  charting library, no rendering step, works in a plain-text `git show`/`git diff`. */
+function textBar(value: number, max: number): string {
+  const filled = Math.max(1, Math.round((value / max) * BAR_WIDTH));
+  return "█".repeat(Math.min(filled, BAR_WIDTH));
+}
+
+function renderBarSection(title: string, rows: readonly { readonly label: string; readonly value: number }[], unit: string): string {
+  const max = Math.max(...rows.map((r) => r.value), 1);
+  const longestLabel = Math.max(...rows.map((r) => r.label.length));
+  const lines = rows.map((r) => `${r.label.padEnd(longestLabel)}  ${textBar(r.value, max)} ${r.value}${unit}`);
+  return `### ${title}\n\n\`\`\`\n${lines.join("\n")}\n\`\`\`\n`;
+}
+
+/**
+ * A single Markdown file, readable directly in `git show`/`git diff`/GitHub — no
+ * rendering step, no external charting library. See
+ * scripts/benchmark_gateway_overhead.ts for what produces the data this renders.
+ */
 export function generateBenchmarkReport(results: readonly SessionResult[]): string {
   const gatewaySessions = results.filter((r) => r.scenario !== "direct_connection");
-  const directSessions = results.filter((r) => r.scenario === "direct_connection");
   const findings = computeFindings(results);
 
-  const findingsHtml = findings
-    .map((f) => {
-      const icon = f.verdict === "good" ? "✅" : f.verdict === "bad" ? "⚠️" : "ℹ️";
-      const bg = f.verdict === "good" ? "#eafbea" : f.verdict === "bad" ? "#fdecea" : "#f0f0f0";
-      return `<li style="background:${bg}; padding: 0.6rem 0.8rem; border-radius: 6px; margin-bottom: 0.5rem; list-style: none;">${icon} ${escapeHtml(f.text)}</li>`;
-    })
-    .join("\n");
+  const findingsMd = findings.map((f) => `- ${VERDICT_ICON[f.verdict]} ${f.text}`).join("\n");
 
-  const tokensChartData = {
-    labels: results.map(label),
-    datasets: [{ label: "Total tokens", data: results.map((r) => r.totalTokens) }],
-  };
-  const latencyChartData = {
-    labels: results.map(label),
-    datasets: [{ label: "Total latency (ms)", data: results.map((r) => r.totalLatencyMs) }],
-  };
+  const tokensSection = renderBarSection(
+    "Total tokens per session",
+    results.map((r) => ({ label: label(r), value: r.totalTokens })),
+    " tok",
+  );
+  const latencySection = renderBarSection(
+    "Total latency per session",
+    results.map((r) => ({ label: label(r), value: r.totalLatencyMs })),
+    "ms",
+  );
 
-  const directByServerCount = new Map(directSessions.map((s) => [s.serverCount, s]));
+  const directByServerCount = new Map(results.filter((r) => r.scenario === "direct_connection").map((s) => [s.serverCount, s]));
   const happyByServerCount = new Map(
     gatewaySessions.filter((s) => s.scenario === "happy_path").map((s) => [`${s.serverCount}-${s.language}`, s]),
   );
-  const comparisonLabels: string[] = [];
-  const comparisonGatewayTokens: number[] = [];
-  const comparisonDirectTokens: number[] = [];
-  const comparisonGatewayLatency: number[] = [];
-  const comparisonDirectLatency: number[] = [];
+  const comparisonRows: string[] = [];
   for (const serverCount of [1, 2] as const) {
     for (const language of ["es", "en"] as const) {
       const happySession = happyByServerCount.get(`${serverCount}-${language}`);
       const directSession = directByServerCount.get(serverCount);
       if (!happySession || !directSession) continue;
-      comparisonLabels.push(`${serverCount} srv (${language})`);
-      comparisonGatewayTokens.push(happySession.totalTokens);
-      comparisonDirectTokens.push(directSession.totalTokens);
-      comparisonGatewayLatency.push(happySession.totalLatencyMs);
-      comparisonDirectLatency.push(directSession.totalLatencyMs);
+      comparisonRows.push(
+        `| ${serverCount} srv (${language}) | ${happySession.totalTokens} | ${directSession.totalTokens} | ${happySession.totalLatencyMs}ms | ${directSession.totalLatencyMs}ms |`,
+      );
     }
   }
-  const tokensComparisonChartData = {
-    labels: comparisonLabels,
-    datasets: [
-      { label: "Through the gateway (warm cache)", data: comparisonGatewayTokens },
-      { label: "Direct connection (no gateway)", data: comparisonDirectTokens },
-    ],
-  };
-  const latencyComparisonChartData = {
-    labels: comparisonLabels,
-    datasets: [
-      { label: "Through the gateway (warm cache)", data: comparisonGatewayLatency },
-      { label: "Direct connection (no gateway)", data: comparisonDirectLatency },
-    ],
-  };
 
   const missRows = gatewaySessions
     .filter((s) => s.scenario === "embedding_miss")
@@ -219,7 +210,7 @@ export function generateBenchmarkReport(results: readonly SessionResult[]): stri
         .filter((step) => step.step === "find_tool" || step.step === "find_tool_retry")
         .map(
           (step: StepMetric) =>
-            `<tr><td>${s.serverCount} srv / ${s.language}</td><td>${step.step}</td><td>${step.foundIntendedTool ? "✅ hit" : "❌ miss"}</td><td>${step.latencyMs}ms</td><td>${step.requestTokens + step.responseTokens}</td></tr>`,
+            `| ${s.serverCount} srv / ${s.language} | ${step.step} | ${step.foundIntendedTool ? "✅ hit" : "❌ miss"} | ${step.latencyMs}ms | ${step.requestTokens + step.responseTokens} |`,
         ),
     )
     .join("\n");
@@ -228,78 +219,61 @@ export function generateBenchmarkReport(results: readonly SessionResult[]): stri
     .filter((s) => s.scenario === "catalog_refresh")
     .map((s) => {
       const firstCallTool = s.steps.find((step) => step.step === "call_tool");
-      return `<tr><td>${s.serverCount} srv / ${s.language}</td><td>${firstCallTool?.latencyMs ?? "n/a"}ms</td><td>${s.totalLatencyMs}ms</td><td>${s.totalTokens}</td></tr>`;
+      return `| ${s.serverCount} srv / ${s.language} | ${firstCallTool?.latencyMs ?? "n/a"}ms | ${s.totalLatencyMs}ms | ${s.totalTokens} |`;
     })
     .join("\n");
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>MCP Trust Gateway — overhead benchmark</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<style>
-  body { font-family: -apple-system, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
-  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2.5rem; }
-  canvas { max-height: 420px; }
-  table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; }
-  th, td { border: 1px solid #ddd; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.9rem; }
-  th { background: #f5f5f5; }
-  p.note { color: #555; font-size: 0.9rem; }
-  ul.findings { padding: 0; margin: 0.5rem 0; }
-</style>
-</head>
-<body>
-<h1>MCP Trust Gateway — real overhead benchmark</h1>
-<p class="note">Generated by <code>scripts/benchmark_gateway_overhead.ts</code> against real Jira/SonarQube servers, real local embeddings, real Postgres (Neon) — not synthetic data. Read-only tool calls only. Every number below is computed directly from this run's own data, not asserted.</p>
+  return `# MCP Trust Gateway — real overhead benchmark
 
-<h2>Conclusions — the good and the bad, computed from this run</h2>
-<ul class="findings">
-${findingsHtml}
-</ul>
+Generated by \`scripts/benchmark_gateway_overhead.ts\` against real Jira/SonarQube
+servers, real local embeddings, real Postgres (Neon) — not synthetic data. Read-only
+tool calls only. Every number below is computed directly from this run's own data, not
+asserted. A dated snapshot of one real run — re-run the script for current numbers
+rather than trusting this indefinitely.
 
-<h2>Total tokens per session</h2>
-<canvas id="tokensChart"></canvas>
+## Conclusions — the good and the bad, computed from this run
 
-<h2>Total latency per session</h2>
-<canvas id="latencyChart"></canvas>
+${findingsMd}
 
-<h2>Gateway (warm cache) vs. direct connection — tokens</h2>
-<p class="note">The direct-connection baseline never calls find_tool — it sees the real, unfiltered tools/list response for every server directly, exactly as an agent would without this gateway.</p>
-<canvas id="tokensComparisonChart"></canvas>
+## Charts
 
-<h2>Gateway (warm cache) vs. direct connection — latency</h2>
-<p class="note">The flip side of the token savings above — see the "Conclusions" section for whether this makes the gateway net slower.</p>
-<canvas id="latencyComparisonChart"></canvas>
+${tokensSection}
+${latencySection}
+### Gateway (warm cache) vs. direct connection
 
-<h2>Embedding miss scenario — did the oblique query find the right tool?</h2>
-<table>
-<tr><th>Session</th><th>Step</th><th>Result</th><th>Latency</th><th>Tokens</th></tr>
+The direct-connection baseline never calls \`find_tool\` — it sees the real, unfiltered
+\`tools/list\` response for every server directly, exactly as an agent would without this
+gateway.
+
+| Servers (lang) | Gateway tokens | Direct tokens | Gateway latency | Direct latency |
+|---|---|---|---|---|
+${comparisonRows.join("\n")}
+
+## Embedding miss scenario — did the oblique query find the right tool?
+
+| Session | Step | Result | Latency | Tokens |
+|---|---|---|---|---|
 ${missRows}
-</table>
 
-<h2>Catalog refresh scenario</h2>
-<p class="note">call_tool's own response latency should stay flat even when it also triggers a background catalog refresh (fire-and-forget, never awaited before responding) — this column is the actual test of that.</p>
-<table>
-<tr><th>Session</th><th>First call_tool latency</th><th>Total session latency</th><th>Total tokens</th></tr>
+## Catalog refresh scenario
+
+\`call_tool\`'s own response latency should stay flat even when it also triggers a
+background catalog refresh (fire-and-forget, never awaited before responding) — this
+column is the actual test of that.
+
+| Session | First call_tool latency | Total session latency | Total tokens |
+|---|---|---|---|
 ${refreshRows}
-</table>
 
-<h2>Raw data</h2>
-<pre style="white-space: pre-wrap; font-size: 0.75rem; background: #f8f8f8; padding: 1rem; border-radius: 4px;">${escapeHtml(JSON.stringify(results, null, 2))}</pre>
+## Raw data
 
-<script>
-const tokensData = ${JSON.stringify(tokensChartData)};
-const latencyData = ${JSON.stringify(latencyChartData)};
-const tokensComparisonData = ${JSON.stringify(tokensComparisonChartData)};
-const latencyComparisonData = ${JSON.stringify(latencyComparisonChartData)};
+<details>
+<summary>Full <code>SessionResult[]</code> JSON (click to expand)</summary>
 
-new Chart(document.getElementById("tokensChart"), { type: "bar", data: tokensData, options: { plugins: { legend: { display: false } } } });
-new Chart(document.getElementById("latencyChart"), { type: "bar", data: latencyData, options: { plugins: { legend: { display: false } } } });
-new Chart(document.getElementById("tokensComparisonChart"), { type: "bar", data: tokensComparisonData });
-new Chart(document.getElementById("latencyComparisonChart"), { type: "bar", data: latencyComparisonData });
-</script>
-</body>
-</html>
+\`\`\`json
+${JSON.stringify(results, null, 2)}
+\`\`\`
+
+</details>
 `;
 }

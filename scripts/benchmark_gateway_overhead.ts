@@ -328,9 +328,9 @@ async function main(): Promise<void> {
   writeFileSync("benchmark-results.json", JSON.stringify(results, null, 2));
   console.log("\nWrote benchmark-results.json");
 
-  const html = generateBenchmarkReport(results);
-  writeFileSync("benchmark-report.html", html);
-  console.log("Wrote benchmark-report.html -- open it in a browser to see the charts.");
+  const report = generateBenchmarkReport(results);
+  writeFileSync("benchmark-report.md", report);
+  console.log("Wrote benchmark-report.md -- readable directly in git/GitHub, no rendering step needed.");
 }
 
 main().catch((error) => {
