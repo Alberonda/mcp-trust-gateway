@@ -22,4 +22,13 @@ export class PostgresIdentityRepository implements IdentityRepository {
     );
     return rows[0] ?? null;
   }
+
+  async create(userId: string, name: string, apiKeyHash: string): Promise<Identity> {
+    const { rows } = await this.db.query<Identity>(
+      `INSERT INTO identities (user_id, name, api_key_hash) VALUES ($1, $2, $3)
+       RETURNING id, user_id AS "userId", name, api_key_hash AS "apiKeyHash", is_active AS "isActive"`,
+      [userId, name, apiKeyHash],
+    );
+    return rows[0];
+  }
 }

@@ -1,11 +1,15 @@
+import type { PermissionRepository } from "../ports/PermissionRepository.js";
 import type { RoleRepository } from "../ports/RoleRepository.js";
 import type { UpstreamServerRepository } from "../ports/UpstreamServerRepository.js";
 import type { UserCredentialRepository } from "../ports/UserCredentialRepository.js";
 import type { UserRepository } from "../ports/UserRepository.js";
 import type { Embedder } from "../ports/Embedder.js";
+import type { InvitationTokenRepository } from "../ports/InvitationTokenRepository.js";
 import type { NewToolCatalogEntry, ToolCatalogRepository } from "../ports/ToolCatalogRepository.js";
 import type { UpstreamConnectionProvider } from "../ports/UpstreamConnectionProvider.js";
 import type { ToolCallResult } from "../ports/UpstreamToolClient.js";
+import { generateInvitationToken } from "../adapters/security/invitationTokens.js";
+import { DEFAULT_INVITATION_ROLE_NAME, DEFAULT_INVITATION_TTL_HOURS } from "./constants.js";
 import type { Identity } from "./types.js";
 import { extractToolSummaries } from "./extractToolSummaries.js";
 
@@ -28,7 +32,11 @@ type AdminAction =
   | "list_users"
   | "delete_user"
   | "delete_credential"
-  | "refresh_catalog";
+  | "refresh_catalog"
+  | "register_server"
+  | "grant_permission"
+  | "revoke_permission"
+  | "create_invitation";
 
 function textResult(text: string): ToolCallResult {
   return { content: [{ type: "text", text }] };
@@ -44,6 +52,7 @@ export class AdminToolHandler {
     private readonly users: UserRepository,
     private readonly upstreamServers: UpstreamServerRepository,
     private readonly userCredentials: UserCredentialRepository,
+    private readonly permissions: PermissionRepository,
     /** Only needed by refresh_catalog — connects using the admin's OWN credential for
      *  the server being refreshed (no exception to "no shared default credential" here
      *  either — see UserCredentialRepository's docstring). */
@@ -51,6 +60,11 @@ export class AdminToolHandler {
     private readonly toolCatalog: ToolCatalogRepository,
     private readonly embedder: Embedder,
     private readonly identity: Identity,
+    /** Only needed by create_invitation — undefined in stdio mode's composition root,
+     *  since self-service signup is an HTTP-mode-only concept (see
+     *  InvitationRedemptionHandler's own docstring for why). create_invitation itself
+     *  checks for this and fails with a clear message rather than crashing. */
+    private readonly invitationTokens?: InvitationTokenRepository,
   ) {}
 
   async handle(action: string, params: Record<string, unknown>): Promise<ToolCallResult> {
@@ -73,10 +87,19 @@ export class AdminToolHandler {
         return this.deleteCredential(params);
       case "refresh_catalog":
         return this.refreshCatalog(params);
+      case "register_server":
+        return this.registerServer(params);
+      case "grant_permission":
+        return this.grantPermission(params);
+      case "revoke_permission":
+        return this.revokePermission(params);
+      case "create_invitation":
+        return this.createInvitation(params);
       default:
         return errorResult(
           `Unknown action "${action}". Valid actions: create_role, delete_role, assign_role, unassign_role, ` +
-            "list_roles, list_users, delete_user, delete_credential, refresh_catalog.",
+            "list_roles, list_users, delete_user, delete_credential, refresh_catalog, register_server, " +
+            "grant_permission, revoke_permission, create_invitation.",
         );
     }
   }
@@ -193,5 +216,87 @@ export class AdminToolHandler {
     } finally {
       await connected.close();
     }
+  }
+
+  /** Registers a brand new upstream server without needing shell/direct-Postgres access
+   *  — the same {command, args} shape any MCP client config already uses (see
+   *  domain/types.ts's UpstreamServer doc), minus any credential (never carried by the
+   *  server itself; each user who needs one registers their own via
+   *  register_my_credential afterward). */
+  private async registerServer(params: Record<string, unknown>): Promise<ToolCallResult> {
+    const { name, command, args, requiresRelay } = params;
+    if (typeof name !== "string" || !name || typeof command !== "string" || !command) {
+      return errorResult('register_server requires "name" and "command" strings (plus optional "args" string array).');
+    }
+    if (args !== undefined && !(Array.isArray(args) && args.every((a) => typeof a === "string"))) {
+      return errorResult('register_server\'s "args", if given, must be an array of strings.');
+    }
+    const existing = await this.upstreamServers.findByName(name);
+    if (existing) return errorResult(`A server named "${name}" already exists — use manage_roles' other actions to change its permissions, not register_server again.`);
+
+    const server = await this.upstreamServers.create({
+      name,
+      command,
+      args: (args as string[] | undefined) ?? [],
+      requiresRelay: requiresRelay === true,
+    });
+    return textResult(
+      `Registered server "${server.name}" (${server.command} ${server.args.join(" ")}). ` +
+        `No role can use it yet — grant one with grant_permission({roleName, serverName: "${server.name}"}).`,
+    );
+  }
+
+  /** toolName omitted/null grants every tool on that server (a blanket grant) — see
+   *  PermissionRepository.grant's own docstring for exactly what that means at the SQL
+   *  level. */
+  private async grantPermission(params: Record<string, unknown>): Promise<ToolCallResult> {
+    const { roleName, serverName } = params;
+    const toolName = typeof params.toolName === "string" && params.toolName ? params.toolName : null;
+    if (typeof roleName !== "string" || typeof serverName !== "string") {
+      return errorResult('grant_permission requires "roleName" and "serverName" strings (plus optional "toolName").');
+    }
+    const [role, server] = await Promise.all([this.roles.findByName(roleName), this.upstreamServers.findByName(serverName)]);
+    if (!role) return errorResult(`No role named "${roleName}".`);
+    if (!server) return errorResult(`No server named "${serverName}".`);
+    await this.permissions.grant(role.id, server.id, toolName);
+    return textResult(`Granted role "${roleName}" ${toolName ? `access to "${toolName}" on` : "blanket access to every tool on"} "${serverName}".`);
+  }
+
+  private async revokePermission(params: Record<string, unknown>): Promise<ToolCallResult> {
+    const { roleName, serverName } = params;
+    const toolName = typeof params.toolName === "string" && params.toolName ? params.toolName : null;
+    if (typeof roleName !== "string" || typeof serverName !== "string") {
+      return errorResult('revoke_permission requires "roleName" and "serverName" strings (plus optional "toolName").');
+    }
+    const [role, server] = await Promise.all([this.roles.findByName(roleName), this.upstreamServers.findByName(serverName)]);
+    if (!role) return errorResult(`No role named "${roleName}".`);
+    if (!server) return errorResult(`No server named "${serverName}".`);
+    await this.permissions.revoke(role.id, server.id, toolName);
+    return textResult(`Revoked role "${roleName}"'s ${toolName ? `access to "${toolName}" on` : "blanket access to every tool on"} "${serverName}" (if it had it).`);
+  }
+
+  /** Issues a one-time signup token a brand new person can redeem themselves (HTTP mode's
+   *  POST /redeem-invitation — see InvitationRedemptionHandler) instead of an admin
+   *  running a provisioning script for every teammate. Defaults to the "basic" role and a
+   *  7-day expiry if the caller doesn't specify otherwise. */
+  private async createInvitation(params: Record<string, unknown>): Promise<ToolCallResult> {
+    if (!this.invitationTokens) {
+      return errorResult("create_invitation is only available in HTTP mode — stdio mode has no self-service signup concept (it's solo use by design).");
+    }
+    const roleName = typeof params.roleName === "string" && params.roleName ? params.roleName : DEFAULT_INVITATION_ROLE_NAME;
+    const ttlHours = typeof params.ttlHours === "number" && params.ttlHours > 0 ? params.ttlHours : DEFAULT_INVITATION_TTL_HOURS;
+
+    const role = await this.roles.findByName(roleName);
+    if (!role) return errorResult(`No role named "${roleName}" — create it first with create_role, or omit roleName to use the default ("${DEFAULT_INVITATION_ROLE_NAME}").`);
+
+    const { plaintext, hash } = generateInvitationToken();
+    const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
+    await this.invitationTokens.create({ tokenHash: hash, roleId: role.id, createdBy: this.identity.userId, expiresAt });
+
+    return textResult(
+      `Invitation token (shown once, share it out of band — Slack/email, never a public channel): ${plaintext}\n` +
+        `Grants role "${roleName}", expires ${expiresAt.toISOString()}. ` +
+        `The new person redeems it via POST /redeem-invitation with {"token": "...", "name": "their-chosen-name"}.`,
+    );
   }
 }

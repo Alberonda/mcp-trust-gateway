@@ -40,9 +40,17 @@ export async function seedServer(db: Queryable, name: string, command = "irrelev
  *  user can do X" without caring about role-sharing semantics go through this instead of
  *  inserting into `permissions` directly (which would need a role_id, not a user_id). */
 export async function grantPermission(db: Queryable, userId: string, serverId: string, toolName: string | null): Promise<void> {
+  const roleId = await seedRole(db);
+  await db.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, [userId, roleId]);
+  await db.query(`INSERT INTO permissions (role_id, server_id, tool_name) VALUES ($1, $2, $3)`, [roleId, serverId, toolName]);
+}
+
+/** A fresh, uniquely-named role with no grants and no members yet — for tests that need
+ *  a real roleId directly (e.g. PermissionRepository.grant/revoke's own tests), unlike
+ *  grantPermission above which hides the role behind a user-facing "can this user do X". */
+export async function seedRole(db: Queryable, isAdmin = false): Promise<string> {
   const {
     rows: [role],
-  } = await db.query<{ id: string }>(`INSERT INTO roles (name) VALUES ($1) RETURNING id`, [`test-role-${randomUUID()}`]);
-  await db.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, [userId, role.id]);
-  await db.query(`INSERT INTO permissions (role_id, server_id, tool_name) VALUES ($1, $2, $3)`, [role.id, serverId, toolName]);
+  } = await db.query<{ id: string }>(`INSERT INTO roles (name, is_admin) VALUES ($1, $2) RETURNING id`, [`test-role-${randomUUID()}`, isAdmin]);
+  return role.id;
 }

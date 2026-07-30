@@ -35,4 +35,23 @@ export class PostgresPermissionRepository implements PermissionRepository {
     if (rows.some((row) => row.toolName === null)) return "all";
     return new Set(rows.map((row) => row.toolName!));
   }
+
+  async grant(roleId: string, serverId: string, toolName: string | null): Promise<void> {
+    // A manual existence check, not `ON CONFLICT DO NOTHING` -- see the port's own
+    // docstring for why that alone isn't idempotent when toolName is NULL.
+    const { rows } = await this.db.query(
+      `SELECT 1 FROM permissions WHERE role_id = $1 AND server_id = $2 AND tool_name IS NOT DISTINCT FROM $3`,
+      [roleId, serverId, toolName],
+    );
+    if (rows.length > 0) return;
+    await this.db.query(`INSERT INTO permissions (role_id, server_id, tool_name) VALUES ($1, $2, $3)`, [roleId, serverId, toolName]);
+  }
+
+  async revoke(roleId: string, serverId: string, toolName: string | null): Promise<void> {
+    await this.db.query(`DELETE FROM permissions WHERE role_id = $1 AND server_id = $2 AND tool_name IS NOT DISTINCT FROM $3`, [
+      roleId,
+      serverId,
+      toolName,
+    ]);
+  }
 }

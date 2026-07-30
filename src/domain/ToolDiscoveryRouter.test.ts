@@ -72,6 +72,13 @@ class FakePermissionRepository implements PermissionRepository {
     if (!allowed) return new Set();
     return allowed === "*" ? "all" : allowed;
   }
+
+  async grant(): Promise<void> {
+    throw new Error("not used in these tests");
+  }
+  async revoke(): Promise<void> {
+    throw new Error("not used in these tests");
+  }
 }
 
 class FakeUpstreamServerRepository implements UpstreamServerRepository {
@@ -430,6 +437,7 @@ test("listMetaTools includes manage_roles only when an adminHandler is supplied"
     new FakeUserRepository(),
     new FakeUpstreamServerRepository(),
     new FakeUserCredentialRepository(),
+    new FakePermissionRepository({}),
     new NullConnectionProvider(),
     new FakeToolCatalogRepository(),
     new FakeEmbedder(),

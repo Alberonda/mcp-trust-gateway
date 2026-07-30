@@ -20,6 +20,12 @@ class FakePermissionRepository implements PermissionRepository {
   async findAllowedToolNames(): Promise<never> {
     throw new Error("not used in these tests");
   }
+  async grant(): Promise<void> {
+    throw new Error("not used in these tests");
+  }
+  async revoke(): Promise<void> {
+    throw new Error("not used in these tests");
+  }
 }
 
 class FakeUpstreamServerRepository implements UpstreamServerRepository {

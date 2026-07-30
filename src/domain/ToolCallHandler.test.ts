@@ -25,6 +25,12 @@ class FakePermissionRepository implements PermissionRepository {
   async findAllowedToolNames(): Promise<AllowedTools> {
     return this.allowed ? "all" : new Set();
   }
+  async grant(): Promise<void> {
+    throw new Error("not used in these tests");
+  }
+  async revoke(): Promise<void> {
+    throw new Error("not used in these tests");
+  }
 }
 
 class FakeAuditLogRepository implements AuditLogRepository {

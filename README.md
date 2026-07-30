@@ -35,9 +35,9 @@ credentials saved from the first, even though both belong to the same user. HTTP
 sidesteps this entirely — only the one centrally-hosted process ever holds this key, and
 every device just talks to it as a client, see "Two ways to connect" below.
 
-See `scripts/README.md` for every operator tool (bootstrapping the first admin,
-registering servers, rotating credentials, viewing the audit log) and `migrations/README.md`
-for the schema itself.
+See [`OPERATIONS.md`](./OPERATIONS.md) for the full day-to-day playbook (onboarding
+people, registering servers, granting access), `scripts/README.md` for every operator
+tool in more detail, and `migrations/README.md` for the schema itself.
 
 ## Two ways to connect — same governance either way
 
@@ -80,6 +80,17 @@ never the database URL or master key. `npm run start:http` runs the server itsel
 `src/entrypoints/http/httpConfig.ts` for every HTTP-specific env var (port, TLS, rate
 limits, session TTL) and their defaults.
 
+**Getting your first API key without an admin running a script for you** (HTTP mode
+only): if an admin gives you a one-time invitation token (`manage_roles`' `create_invitation`
+action), redeem it yourself — no prior account needed:
+```bash
+curl -X POST https://your-gateway-host/redeem-invitation \
+  -H "Content-Type: application/json" \
+  -d '{"token": "mtgi_...", "name": "your-chosen-name"}'
+# -> {"apiKey": "mtg_...", "userName": "..."}
+```
+One-time use, expires per the admin's own setting. See `OPERATIONS.md` for the admin side.
+
 **One real limit**: a server only reachable from inside a specific network (an internal
 SonarQube/Jenkins, say) can never be served by a gateway running on public cloud
 infrastructure — no code fixes a network that doesn't route there. For those, see
@@ -97,7 +108,7 @@ sit behind the gateway:
 | `call_tool` | Everyone | Call a real tool discovered via `find_tool` |
 | `list_services` | Everyone | See every registered server and your status: `ready`, `needs_credential`, `not_permitted` |
 | `register_my_credential` | Everyone | Set your own credential for a server you're already permitted on — never grants permission itself |
-| `manage_roles` | Admins only | Create/delete roles, assign/unassign, manage users/credentials, force a server's tool catalog to refresh — structurally absent from a non-admin's session, not just hidden |
+| `manage_roles` | Admins only | Create/delete roles, assign/unassign, grant/revoke permissions, register new servers, manage users/credentials, force a tool catalog refresh, issue self-service invitation tokens — structurally absent from a non-admin's session, not just hidden |
 
 Permissions are granted to **roles** (`migrations/007_roles.sql`), not individual
 users — your effective access is the union of every role you hold.

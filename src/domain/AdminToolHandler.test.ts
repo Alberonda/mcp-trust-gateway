@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { AllowedTools, PermissionRepository } from "../ports/PermissionRepository.js";
 import type { RoleRepository } from "../ports/RoleRepository.js";
 import type { NewUpstreamServer, UpstreamServerRepository } from "../ports/UpstreamServerRepository.js";
-import type { EncryptedUpstreamCredential, Identity, Role, UpstreamServer, User } from "./types.js";
+import type { EncryptedUpstreamCredential, Identity, InvitationToken, Role, UpstreamServer, User } from "./types.js";
+import type { InvitationTokenRepository, NewInvitationToken } from "../ports/InvitationTokenRepository.js";
 import type { UserCredentialRepository } from "../ports/UserCredentialRepository.js";
 import type { UserRepository } from "../ports/UserRepository.js";
 import type { ConnectedUpstream, UpstreamConnectionProvider } from "../ports/UpstreamConnectionProvider.js";
@@ -44,6 +46,43 @@ class FakeToolCatalogRepository implements ToolCatalogRepository {
 class FakeEmbedder implements Embedder {
   async embed(text: string): Promise<number[]> {
     return [text.length];
+  }
+}
+
+class FakePermissionRepository implements PermissionRepository {
+  public readonly grants: { roleId: string; serverId: string; toolName: string | null }[] = [];
+  public readonly revokes: { roleId: string; serverId: string; toolName: string | null }[] = [];
+  async isCallAllowed(): Promise<boolean> {
+    throw new Error("not used in these tests");
+  }
+  async findAccessibleServerIds(): Promise<string[]> {
+    throw new Error("not used in these tests");
+  }
+  async findAllowedToolNames(): Promise<AllowedTools> {
+    throw new Error("not used in these tests");
+  }
+  async grant(roleId: string, serverId: string, toolName: string | null): Promise<void> {
+    this.grants.push({ roleId, serverId, toolName });
+  }
+  async revoke(roleId: string, serverId: string, toolName: string | null): Promise<void> {
+    this.revokes.push({ roleId, serverId, toolName });
+  }
+}
+
+class FakeInvitationTokenRepository implements InvitationTokenRepository {
+  public readonly created: NewInvitationToken[] = [];
+  private readonly byHash = new Map<string, InvitationToken>();
+  async create(token: NewInvitationToken): Promise<InvitationToken> {
+    this.created.push(token);
+    const created: InvitationToken = { id: `invitation-${this.created.length}`, roleId: token.roleId, expiresAt: token.expiresAt, usedAt: null };
+    this.byHash.set(token.tokenHash, created);
+    return created;
+  }
+  async findByHash(tokenHash: string): Promise<InvitationToken | null> {
+    return this.byHash.get(tokenHash) ?? null;
+  }
+  async markUsed(): Promise<void> {
+    throw new Error("not used in these tests");
   }
 }
 
@@ -117,7 +156,10 @@ class FakeUserRepository implements UserRepository {
 }
 
 class FakeUpstreamServerRepository implements UpstreamServerRepository {
-  constructor(private readonly servers: readonly UpstreamServer[] = []) {}
+  private readonly servers: UpstreamServer[];
+  constructor(initial: readonly UpstreamServer[] = []) {
+    this.servers = [...initial];
+  }
   async findByName(name: string): Promise<UpstreamServer | null> {
     return this.servers.find((s) => s.name === name) ?? null;
   }
@@ -127,8 +169,10 @@ class FakeUpstreamServerRepository implements UpstreamServerRepository {
   async findAll(): Promise<UpstreamServer[]> {
     return [...this.servers];
   }
-  async create(_server: NewUpstreamServer): Promise<UpstreamServer> {
-    throw new Error("not used in these tests");
+  async create(server: NewUpstreamServer): Promise<UpstreamServer> {
+    const created: UpstreamServer = { id: `server-${server.name}`, name: server.name, command: server.command, args: server.args, requiresRelay: server.requiresRelay ?? false };
+    this.servers.push(created);
+    return created;
   }
 }
 
@@ -143,16 +187,29 @@ class FakeUserCredentialRepository implements UserCredentialRepository {
   }
 }
 
-function buildHandler(options: { connectionProvider?: UpstreamConnectionProvider } = {}) {
+function buildHandler(options: { connectionProvider?: UpstreamConnectionProvider; withInvitations?: boolean } = {}) {
   const roles = new FakeRoleRepository();
   const users = new FakeUserRepository();
   const servers = new FakeUpstreamServerRepository([{ id: "s1", name: "sonarqube", command: "irrelevant", args: [], requiresRelay: false }]);
   const credentials = new FakeUserCredentialRepository();
+  const permissions = new FakePermissionRepository();
   const connectionProvider = options.connectionProvider ?? new FakeUpstreamConnectionProvider();
   const toolCatalog = new FakeToolCatalogRepository();
   const embedder = new FakeEmbedder();
-  const handler = new AdminToolHandler(roles, users, servers, credentials, connectionProvider, toolCatalog, embedder, testIdentity);
-  return { handler, roles, users, servers, credentials, connectionProvider, toolCatalog, embedder };
+  const invitationTokens = options.withInvitations ? new FakeInvitationTokenRepository() : undefined;
+  const handler = new AdminToolHandler(
+    roles,
+    users,
+    servers,
+    credentials,
+    permissions,
+    connectionProvider,
+    toolCatalog,
+    embedder,
+    testIdentity,
+    invitationTokens,
+  );
+  return { handler, roles, users, servers, credentials, permissions, connectionProvider, toolCatalog, embedder, invitationTokens };
 }
 
 test("create_role creates a role and reports it", async () => {
@@ -296,4 +353,107 @@ test("refresh_catalog surfaces a connection failure as a clear error instead of 
 
   assert.equal(result.isError, true);
   assert.match(result.content?.[0]?.text ?? "", /connection refused/);
+});
+
+test("register_server registers a brand new server with no credential and no permission yet", async () => {
+  const { handler, servers } = buildHandler();
+
+  const result = await handler.handle("register_server", { name: "github", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"] });
+
+  assert.equal(result.isError, undefined);
+  assert.match(result.content?.[0]?.text ?? "", /grant_permission/);
+  const registered = await servers.findByName("github");
+  assert.ok(registered);
+  assert.deepEqual(registered?.args, ["-y", "@modelcontextprotocol/server-github"]);
+});
+
+test("register_server refuses to re-register a server name that already exists", async () => {
+  const { handler } = buildHandler();
+
+  const result = await handler.handle("register_server", { name: "sonarqube", command: "npx", args: [] });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content?.[0]?.text ?? "", /already exists/);
+});
+
+test("register_server requires name and command, rejecting a malformed call instead of guessing", async () => {
+  const { handler } = buildHandler();
+
+  const result = await handler.handle("register_server", { name: "github" });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content?.[0]?.text ?? "", /requires/);
+});
+
+test("grant_permission grants blanket access when no toolName is given", async () => {
+  const { handler, roles, permissions } = buildHandler();
+  await handler.handle("create_role", { name: "developer", isAdmin: false });
+
+  const result = await handler.handle("grant_permission", { roleName: "developer", serverName: "sonarqube" });
+
+  assert.equal(result.isError, undefined);
+  const developerRole = await roles.findByName("developer");
+  assert.deepEqual(permissions.grants, [{ roleId: developerRole?.id, serverId: "s1", toolName: null }]);
+});
+
+test("grant_permission grants a single named tool when toolName is given", async () => {
+  const { handler, permissions } = buildHandler();
+  await handler.handle("create_role", { name: "developer", isAdmin: false });
+
+  await handler.handle("grant_permission", { roleName: "developer", serverName: "sonarqube", toolName: "system_ping" });
+
+  assert.equal(permissions.grants[0]?.toolName, "system_ping");
+});
+
+test("grant_permission rejects an unknown role or server with a clear error", async () => {
+  const { handler } = buildHandler();
+
+  const badRole = await handler.handle("grant_permission", { roleName: "does-not-exist", serverName: "sonarqube" });
+  const badServer = await handler.handle("grant_permission", { roleName: "developer", serverName: "does-not-exist" });
+
+  assert.equal(badRole.isError, true);
+  assert.equal(badServer.isError, true);
+});
+
+test("revoke_permission revokes what grant_permission granted", async () => {
+  const { handler, roles, permissions } = buildHandler();
+  await handler.handle("create_role", { name: "developer", isAdmin: false });
+  await handler.handle("grant_permission", { roleName: "developer", serverName: "sonarqube" });
+
+  const result = await handler.handle("revoke_permission", { roleName: "developer", serverName: "sonarqube" });
+
+  assert.equal(result.isError, undefined);
+  const developerRole = await roles.findByName("developer");
+  assert.deepEqual(permissions.revokes, [{ roleId: developerRole?.id, serverId: "s1", toolName: null }]);
+});
+
+test("create_invitation issues a token for the named role with an expiry", async () => {
+  const { handler, roles, invitationTokens } = buildHandler({ withInvitations: true });
+  await handler.handle("create_role", { name: "basic", isAdmin: false });
+
+  const result = await handler.handle("create_invitation", { roleName: "basic" });
+
+  assert.equal(result.isError, undefined);
+  assert.match(result.content?.[0]?.text ?? "", /mtgi_/);
+  const basicRole = await roles.findByName("basic");
+  assert.equal(invitationTokens?.created.length, 1);
+  assert.equal(invitationTokens?.created[0]?.roleId, basicRole?.id);
+});
+
+test("create_invitation rejects a role that doesn't exist yet, with a clear error", async () => {
+  const { handler } = buildHandler({ withInvitations: true });
+
+  const result = await handler.handle("create_invitation", { roleName: "does-not-exist" });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content?.[0]?.text ?? "", /No role named/);
+});
+
+test("create_invitation fails clearly in stdio mode, where no InvitationTokenRepository is wired at all", async () => {
+  const { handler } = buildHandler({ withInvitations: false });
+
+  const result = await handler.handle("create_invitation", { roleName: "basic" });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content?.[0]?.text ?? "", /only available in HTTP mode/);
 });

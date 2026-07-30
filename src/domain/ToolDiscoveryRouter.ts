@@ -40,6 +40,14 @@ const MetaTool = {
   ManageRoles: "manage_roles",
 } as const;
 
+/** ✅ configured and usable, ❌ permitted but still needs a credential from you, 🚫 not
+ *  even permitted yet (ask an admin) — see SelfServiceHandler.ServiceStatus. */
+const SERVICE_STATUS_ICON: Record<"ready" | "needs_credential" | "not_permitted", string> = {
+  ready: "✅",
+  needs_credential: "❌",
+  not_permitted: "🚫",
+};
+
 export interface DiscoveredTool {
   readonly server: string;
   readonly name: string;
@@ -289,7 +297,11 @@ export class ToolDiscoveryRouter {
 
     if (name === MetaTool.ListServices) {
       const services = await this.selfService.listServices();
-      return { content: [{ type: "text", text: JSON.stringify(services, null, 2) }] };
+      // A `display` field alongside the machine-readable `status` — a quick ✅/❌/🚫 glance
+      // for whoever's actually reading this (a human via their agent), without changing
+      // `status`'s own values, which existing callers may already depend on verbatim.
+      const withDisplay = services.map((s) => ({ ...s, display: `${SERVICE_STATUS_ICON[s.status]} ${s.server}` }));
+      return { content: [{ type: "text", text: JSON.stringify(withDisplay, null, 2) }] };
     }
 
     if (name === MetaTool.RegisterMyCredential) {

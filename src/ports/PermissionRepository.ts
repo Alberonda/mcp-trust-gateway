@@ -31,4 +31,17 @@ export interface PermissionRepository {
    *  to isCallAllowed. Use this instead of calling isCallAllowed once per candidate tool
    *  when checking a whole tool list at once (e.g. filtering find_tool's results). */
   findAllowedToolNames(userId: string, serverId: string): Promise<AllowedTools>;
+
+  /** Grants roleId access to serverId — toolName null means every tool on that server
+   *  (a blanket grant), matching how permissions.tool_name IS NULL is interpreted
+   *  everywhere else. Idempotent — granting the same (role, server, tool) twice is a
+   *  no-op, not an error. Deliberately NOT implemented as a plain `ON CONFLICT DO
+   *  NOTHING` against permissions' UNIQUE(role_id, server_id, tool_name) constraint —
+   *  standard SQL treats every NULL as distinct from every other NULL for uniqueness
+   *  purposes, so that alone would let repeated blanket grants (tool_name IS NULL)
+   *  silently duplicate instead of no-op. */
+  grant(roleId: string, serverId: string, toolName: string | null): Promise<void>;
+
+  /** Idempotent — revoking a grant that doesn't exist is a harmless no-op. */
+  revoke(roleId: string, serverId: string, toolName: string | null): Promise<void>;
 }

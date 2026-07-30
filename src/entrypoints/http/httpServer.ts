@@ -17,6 +17,8 @@ import { PostgresAuditLogRepository } from "../../adapters/postgres/AuditLogRepo
 import type { AuditLogRepository } from "../../ports/AuditLogRepository.js";
 import { PostgresIdentityRepository } from "../../adapters/postgres/IdentityRepository.js";
 import type { IdentityRepository } from "../../ports/IdentityRepository.js";
+import { PostgresInvitationTokenRepository } from "../../adapters/postgres/InvitationTokenRepository.js";
+import type { InvitationTokenRepository } from "../../ports/InvitationTokenRepository.js";
 import { PostgresPermissionRepository } from "../../adapters/postgres/PermissionRepository.js";
 import type { PermissionRepository } from "../../ports/PermissionRepository.js";
 import { createPool } from "../../adapters/postgres/pool.js";
@@ -33,6 +35,7 @@ import { PostgresUserRepository } from "../../adapters/postgres/UserRepository.j
 import type { UserRepository } from "../../ports/UserRepository.js";
 import type { Identity } from "../../domain/types.js";
 import { AdminToolHandler } from "../../domain/AdminToolHandler.js";
+import { InvitationRedemptionHandler } from "../../domain/InvitationRedemptionHandler.js";
 import { buildAccessibleServerHandlers } from "../../domain/buildAccessibleServerHandlers.js";
 import { SelfServiceHandler } from "../../domain/SelfServiceHandler.js";
 import { ToolDiscoveryRouter } from "../../domain/ToolDiscoveryRouter.js";
@@ -97,6 +100,8 @@ interface Dependencies {
   readonly embedder: Embedder;
   readonly rateLimiter: RateLimiter;
   readonly sessionTtlMinutes: number;
+  readonly invitationTokens: InvitationTokenRepository;
+  readonly invitationRedemption: InvitationRedemptionHandler;
 }
 
 async function createMcpSession(identity: Identity, deps: Dependencies): Promise<McpSession> {
@@ -125,10 +130,12 @@ async function createMcpSession(identity: Identity, deps: Dependencies): Promise
         deps.users,
         deps.upstreamServers,
         deps.userCredentials,
+        deps.permissions,
         deps.connectionProvider,
         deps.toolCatalog,
         deps.embedder,
         identity,
+        deps.invitationTokens,
       )
     : undefined;
   const router = new ToolDiscoveryRouter(handlers, identity, deps.auditLog, selfService, deps.toolCatalog, deps.embedder, adminHandler);
@@ -199,6 +206,26 @@ async function handleLogin(req: Request, res: Response, deps: Dependencies): Pro
     deps.sessionTtlMinutes,
   );
   res.status(200).json({ token, expiresAt: expiresAt.toISOString() });
+}
+
+/** Deliberately unauthenticated — the whole point is letting a brand new person, who
+ *  holds nothing but a one-time token an admin gave them, create their own account (see
+ *  InvitationRedemptionHandler). Not rate-limited by identity (there isn't one yet); the
+ *  token itself is the rate limit — one use, then it's dead regardless of how many times
+ *  someone retries it. */
+async function handleRedeemInvitation(req: Request, res: Response, deps: Dependencies): Promise<void> {
+  const { token, name } = req.body as { token?: unknown; name?: unknown };
+  if (typeof token !== "string" || !token || typeof name !== "string" || !name) {
+    res.status(400).json({ error: 'Redeeming an invitation requires "token" and "name" strings.' });
+    return;
+  }
+
+  const result = await deps.invitationRedemption.redeem(token, name);
+  if ("error" in result) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+  res.status(201).json({ apiKey: result.apiKey, userName: result.userName });
 }
 
 async function handleLogout(req: Request, res: Response, deps: Dependencies): Promise<void> {
@@ -291,14 +318,18 @@ function buildDependencies(config: HttpGatewayConfig): { deps: Dependencies; rel
     new PerSessionUpstreamConnectionProvider(vault),
     new RelayUpstreamConnectionProvider(relayAgentRegistry, vault),
   );
+  const identities = new PostgresIdentityRepository(pool);
+  const roles = new PostgresRoleRepository(pool);
+  const users = new PostgresUserRepository(pool);
+  const invitationTokens = new PostgresInvitationTokenRepository(pool);
   const deps: Dependencies = {
     pool,
-    identities: new PostgresIdentityRepository(pool),
+    identities,
     permissions: new PostgresPermissionRepository(pool),
     upstreamServers: new PostgresUpstreamServerRepository(pool),
     userCredentials: new PostgresUserCredentialRepository(pool),
-    roles: new PostgresRoleRepository(pool),
-    users: new PostgresUserRepository(pool),
+    roles,
+    users,
     vault,
     auditLog: new SafeAuditLogRepository(new PostgresAuditLogRepository(pool)),
     sessions: new PostgresSessionRepository(pool),
@@ -307,6 +338,8 @@ function buildDependencies(config: HttpGatewayConfig): { deps: Dependencies; rel
     embedder: new LocalEmbedder(),
     rateLimiter: new InMemoryTokenBucketRateLimiter(config.rateLimit.maxTokens, config.rateLimit.refillPerSecond / 1000),
     sessionTtlMinutes: config.sessionTtlMinutes,
+    invitationTokens,
+    invitationRedemption: new InvitationRedemptionHandler(invitationTokens, users, identities, roles),
   };
   return { deps, relayAgentRegistry };
 }
@@ -347,6 +380,7 @@ async function main(): Promise<void> {
   const app = createMcpExpressApp({ host: config.host, allowedHosts: config.allowedHosts as string[] | undefined });
   app.get("/health", safely((req, res) => handleHealth(req, res, deps)));
   app.post("/login", safely((req, res) => handleLogin(req, res, deps)));
+  app.post("/redeem-invitation", safely((req, res) => handleRedeemInvitation(req, res, deps)));
   app.post("/logout", safely((req, res) => handleLogout(req, res, deps)));
   app.post("/mcp", safely((req, res) => handleMcpPost(req, res, deps)));
   app.get("/mcp", safely((req, res) => handleMcpGetOrDelete(req, res, deps)));

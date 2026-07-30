@@ -69,3 +69,22 @@ export const EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
  *  baseline shift because it only compares candidates to each other, never to an
  *  absolute number that has no fixed meaning across models/corpora. */
 export const MAX_FIND_TOOL_RESULTS = 10;
+
+/** Entropy for a generated invitation token — same size as an API key/session token,
+ *  same threat model (a high-entropy secret compared only via a fast hash, never a
+ *  human-chosen password — see security/apiKeys.ts's docstring). */
+export const INVITATION_TOKEN_RANDOM_BYTES = 24;
+
+/** Distinct prefix so an invitation token is visually distinguishable from an API key or
+ *  session token at a glance. */
+export const INVITATION_TOKEN_PREFIX = "mtgi_";
+
+/** How long an unredeemed invitation token stays valid before it's simply rejected —
+ *  short enough that a token pasted into a Slack message years ago can't suddenly be
+ *  redeemed by whoever finds it later. An admin can always issue a new one. */
+export const DEFAULT_INVITATION_TTL_HOURS = 7 * 24;
+
+/** The role a self-service invitation grants by default if the admin issuing it doesn't
+ *  name a different one — see scripts/seed_default_roles.ts for what it actually grants
+ *  and DESIGN.md's "Self-service onboarding" for why it's deliberately narrow. */
+export const DEFAULT_INVITATION_ROLE_NAME = "basic";

@@ -61,3 +61,16 @@ export interface UpstreamServer {
    *  spawning the subprocess itself. */
   readonly requiresRelay: boolean;
 }
+
+/** A one-time, admin-issued token that lets a brand new person provision their own
+ *  user/identity/API key over HTTP (`POST /redeem-invitation`) without an admin running a
+ *  script by hand for every new teammate — see migrations/010_invitation_tokens.sql and
+ *  DESIGN.md's "Self-service onboarding" section for why this exists and its real
+ *  constraints (HTTP mode only; the role it grants must itself be safe to hand to a
+ *  stranger with zero vetting beyond holding the token). */
+export interface InvitationToken {
+  readonly id: string;
+  readonly roleId: string;
+  readonly expiresAt: Date;
+  readonly usedAt: Date | null;
+}

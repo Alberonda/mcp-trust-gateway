@@ -135,6 +135,75 @@ client/server relationship is always client-initiated, but here the gateway need
 initiate toward the agent, so `ports/RelayAgentRegistry.ts` defines its own small
 request/response protocol instead of reusing MCP's shape.
 
+### Self-service onboarding
+
+Before this, every new person needed an admin to run a script by hand (`provisionUserWithIdentity`
+lived only in `scripts/lib/`, not reachable at runtime at all). Two ways now, both real:
+
+- **Admin-provisioned** (either mode): `scripts/provision_user.ts <name> [roleName]` —
+  creates the user/identity/API key in one step, prints the key once.
+- **Self-service** (HTTP mode only — see below for why): an admin issues a one-time
+  token via `manage_roles`' `create_invitation` action (`migrations/010_invitation_tokens.sql`,
+  `InvitationTokenRepository`), the new person redeems it themselves via `POST
+  /redeem-invitation` — no prior identity at all, by design; that route is deliberately
+  unauthenticated the same way `/login` structurally can't require what it's issuing.
+  `InvitationRedemptionHandler` (domain logic, unit-tested with fakes — not glue code
+  inside `httpServer.ts`) validates the token (exists, unused, unexpired), creates the
+  user/identity, and assigns the role atomically enough for this project's actual scale
+  (sequential awaits, no explicit transaction — consistent with every other multi-step
+  admin operation here, not a new pattern introduced just for this).
+
+  HTTP-mode-only is a real, deliberate constraint, not an oversight: self-service signup
+  is a "many people, one shared deployment" concept, which is what HTTP mode is *for*
+  (see the README's "Two ways to connect" table) — stdio mode is solo use by
+  construction, so `create_invitation` fails with a clear message there rather than
+  silently doing something that doesn't make sense for that mode.
+
+- **What a self-service invitation is allowed to grant, and why that mattered for
+  real**: `DEFAULT_INVITATION_ROLE_NAME` ("basic") must be safe to hand to anyone who
+  merely holds the token, with zero further vetting — this is genuinely different from
+  "developer," which an admin still consciously assigns. Raised in conversation
+  2026-07-30 and traced to a real, fixable gap: `jira` was registered against a personal
+  wrapper script (`jira-atlassian.sh`) that read macOS Keychain directly, independent of
+  which identity connected — meaning every identity permitted on it got the *same* real
+  Jira access regardless of their own stored credential, contradicting this project's
+  own "never a shared default credential" principle (see `migrations/006`). Fixed at the
+  root, not worked around: re-registered `jira` against the real `mcp-atlassian` binary
+  directly (`uvx mcp-atlassian --transport stdio`) — it already supports standard
+  `JIRA_URL`/`JIRA_USERNAME`/`JIRA_API_TOKEN` env vars, so per-user credentials
+  (`register_my_credential`) work for it exactly like they already did for sonarqube.
+  Verified for real: migrated this operator's own real Jira credential to their own
+  `user_credentials` row, confirmed `list_services` correctly flipped from showing no
+  credential needed at all to `needs_credential`/`ready` like every other server, and a
+  real `jira_get_agile_boards` call still returned real data afterward. Only once this
+  was true did it become safe to put jira in "basic" at all.
+
+- **Admin self-service was also missing entirely for two other things this same gap
+  surfaced**: there was no way to register a new server or grant/revoke a role's
+  permissions without either writing a one-off script or connecting directly to
+  Postgres — contradicting "no direct DB access needed for admin operations" the same
+  way the credential-vault design already assumes. Fixed with `manage_roles`'
+  `register_server`/`grant_permission`/`revoke_permission` actions (backed by a new
+  `PermissionRepository.grant`/`revoke`, done as a manual existence check rather than
+  `ON CONFLICT DO NOTHING` — standard SQL treats every `NULL` as distinct from every
+  other `NULL` for uniqueness, which would have made repeated blanket grants
+  (`tool_name IS NULL`) silently duplicate instead of no-op) and matching standalone
+  `scripts/register_server.ts`/`provision_user.ts` for operators who'd rather run a
+  script than call a meta-tool.
+
+- **`list_services`' output also got a `display` field** (`✅`/`❌`/`🚫` next to each
+  server name) alongside its existing machine-readable `status` — purely additive, the
+  existing `status` values are unchanged for anything already depending on them.
+
+See `OPERATIONS.md` for the actual day-to-day playbook this enables, and
+`.devin/agent-instructions-template.md` for a template that tells an agent to use this
+gateway's meta-tools instead of connecting to a real MCP server directly — worth being
+honest about what that file actually is: documentation hygiene, not a technical control.
+Nothing stops an agent's config from listing another MCP server directly; the actual
+enforcement is that a direct connection gets none of this project's audit
+trail/permission checks/credential brokering, which is the whole reason to go through
+the gateway at all, not a restriction enforced on the config file itself.
+
 ## Key decisions
 
 | Decision | Choice | Why |
@@ -149,7 +218,7 @@ request/response protocol instead of reusing MCP's shape.
 ## Current status
 
 Verified against real Postgres, real MCP servers, and a real deployment (Neon + Render) —
-not just intended behavior. 177 tests (116 unit, 57 integration, 4 e2e — see "Testing").
+not just intended behavior. 205 tests (131 unit, 69 integration, 5 e2e — see "Testing").
 
 - **Governance across multiple servers**: an identity only discovers/calls tools on
   servers its roles grant, enforced identically whether reached via `find_tool` or
@@ -172,6 +241,11 @@ not just intended behavior. 177 tests (116 unit, 57 integration, 4 e2e — see "
 - **Relay agent**: executes servers only reachable from a specific network, on a
   machine that actually has access to it, without the gateway's master key ever leaving
   the server that runs the gateway itself.
+- **Self-service onboarding**: an admin can provision a new person from the CLI
+  (`scripts/provision_user.ts`) or let them self-register via a one-time invitation
+  token (`manage_roles`' `create_invitation` + `POST /redeem-invitation`, HTTP mode
+  only) — see "Self-service onboarding" above, including the real jira credential-
+  isolation fix that had to land first for that to be safe.
 - **CI**: `.github/workflows/ci.yml` — an ephemeral Postgres service container, typecheck
   + all three test suites on every push/PR.
 

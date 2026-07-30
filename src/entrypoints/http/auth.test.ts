@@ -21,6 +21,9 @@ class FakeIdentityRepository implements IdentityRepository {
   async findById(id: string): Promise<Identity | null> {
     return id === testIdentity.id ? testIdentity : null;
   }
+  async create(): Promise<Identity> {
+    throw new Error("not used in these tests");
+  }
 }
 
 class FakeSessionRepository implements SessionRepository {

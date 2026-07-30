@@ -12,8 +12,19 @@ needed. If you're just trying to use the gateway, you probably don't need anythi
   credentials, for a first smoke test right after setup.
 - `bootstrap_admin.ts` — grants one named, already-provisioned user the admin role.
   Deliberately manual, not run by any migration — see DESIGN.md for why.
-- `seed_default_roles.ts` — idempotent: creates an `admin` role (empty) and a `developer`
-  role with real servers, if they don't already exist.
+- `provision_user.ts <name> [roleName]` — provisions a genuinely new real person (user +
+  identity + API key, optionally a role) in one step. For letting people provision
+  themselves without an admin running this per person, see `manage_roles`'
+  `create_invitation` action + `POST /redeem-invitation` instead (HTTP mode only) — see
+  OPERATIONS.md.
+- `register_server.ts <name> <command> [roleName] -- <args...>` — registers a real MCP
+  server from the CLI, optionally granting one role blanket access in the same step. See
+  `manage_roles`' `register_server`/`grant_permission` actions for the no-shell-access
+  equivalent.
+- `seed_default_roles.ts` — idempotent: creates `admin` (empty), `developer` (real
+  servers), and `basic` (jira only — see its own docstring for why that's the only
+  server currently safe to hand to a self-registered stranger) roles, if they don't
+  already exist.
 - `set_user_credential.ts` — sets one user's own credential for a server, on their
   behalf. Most users should use the `register_my_credential` meta-tool themselves instead
   — this is for an operator setting it on someone else's.

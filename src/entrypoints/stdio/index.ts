@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   );
   const selfService = new SelfServiceHandler(identity.userId, permissions, upstreamServers, userCredentials, vault);
   const adminHandler = (await roles.isUserAdmin(identity.userId))
-    ? new AdminToolHandler(roles, users, upstreamServers, userCredentials, connectionProvider, toolCatalog, embedder, identity)
+    ? new AdminToolHandler(roles, users, upstreamServers, userCredentials, permissions, connectionProvider, toolCatalog, embedder, identity)
     : undefined;
   const router = new ToolDiscoveryRouter(handlers, identity, auditLog, selfService, toolCatalog, embedder, adminHandler);
 

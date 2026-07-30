@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PostgresPermissionRepository } from "../../src/adapters/postgres/PermissionRepository.js";
-import { grantPermission, seedServer, seedUserAndIdentity } from "./testFixtures.js";
+import { grantPermission, seedRole, seedServer, seedUserAndIdentity } from "./testFixtures.js";
 import { withTransaction } from "./setupDatabase.js";
 
 test(
@@ -159,5 +159,78 @@ test(
     const allowed = await new PostgresPermissionRepository(db).findAllowedToolNames(userId, serverId);
 
     assert.deepEqual(allowed, new Set());
+  }),
+);
+
+test(
+  "grant() then isCallAllowed() reflects a blanket grant immediately",
+  withTransaction(async ({ db }) => {
+    const { userId } = await seedUserAndIdentity(db, "agent");
+    const roleId = await seedRole(db);
+    await db.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, [userId, roleId]);
+    const serverId = await seedServer(db, "server");
+    const repo = new PostgresPermissionRepository(db);
+
+    await repo.grant(roleId, serverId, null);
+
+    assert.equal(await repo.isCallAllowed(userId, serverId, "anything"), true);
+  }),
+);
+
+test(
+  "grant() called twice with the same (role, server, null) does not create a duplicate row",
+  withTransaction(async ({ db }) => {
+    const roleId = await seedRole(db);
+    const serverId = await seedServer(db, "server");
+    const repo = new PostgresPermissionRepository(db);
+
+    await repo.grant(roleId, serverId, null);
+    await repo.grant(roleId, serverId, null);
+
+    const { rows } = await db.query(`SELECT * FROM permissions WHERE role_id = $1 AND server_id = $2`, [roleId, serverId]);
+    assert.equal(rows.length, 1, "a second identical blanket grant must be a no-op, not a duplicate row (NULL is not distinct from NULL here)");
+  }),
+);
+
+test(
+  "grant() with a specific toolName and grant() with null (blanket) for the same role/server coexist as separate rows",
+  withTransaction(async ({ db }) => {
+    const roleId = await seedRole(db);
+    const serverId = await seedServer(db, "server");
+    const repo = new PostgresPermissionRepository(db);
+
+    await repo.grant(roleId, serverId, "read_file");
+    await repo.grant(roleId, serverId, null);
+
+    const { rows } = await db.query(`SELECT tool_name FROM permissions WHERE role_id = $1 AND server_id = $2`, [roleId, serverId]);
+    assert.equal(rows.length, 2);
+  }),
+);
+
+test(
+  "revoke() removes exactly the grant it's asked to, leaving others on the same role/server intact",
+  withTransaction(async ({ db }) => {
+    const { userId } = await seedUserAndIdentity(db, "agent");
+    const roleId = await seedRole(db);
+    await db.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, [userId, roleId]);
+    const serverId = await seedServer(db, "server");
+    const repo = new PostgresPermissionRepository(db);
+    await repo.grant(roleId, serverId, "read_file");
+    await repo.grant(roleId, serverId, "write_file");
+
+    await repo.revoke(roleId, serverId, "read_file");
+
+    assert.equal(await repo.isCallAllowed(userId, serverId, "read_file"), false);
+    assert.equal(await repo.isCallAllowed(userId, serverId, "write_file"), true);
+  }),
+);
+
+test(
+  "revoke() of a grant that was never made is a harmless no-op",
+  withTransaction(async ({ db }) => {
+    const roleId = await seedRole(db);
+    const serverId = await seedServer(db, "server");
+
+    await new PostgresPermissionRepository(db).revoke(roleId, serverId, "never-granted");
   }),
 );
