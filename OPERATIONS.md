@@ -47,7 +47,9 @@ Two ways, pick based on how much you trust "give them a token, they do the rest"
    defaults to `"basic"` if omitted; `ttlHours` defaults to 7 days.
 2. Send that token to the new person (Slack/email — never a public channel; whoever has
    it can redeem it once).
-3. They redeem it themselves, with no prior account at all:
+3. They redeem it themselves, with no prior account at all — either open
+   `https://your-gateway-host/redeem-invitation?token=mtgi_...` in a browser (a plain
+   HTML page, no login needed to view it), or:
    ```bash
    curl -X POST https://your-gateway-host/redeem-invitation \
      -H "Content-Type: application/json" \

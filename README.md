@@ -82,7 +82,9 @@ limits, session TTL) and their defaults.
 
 **Getting your first API key without an admin running a script for you** (HTTP mode
 only): if an admin gives you a one-time invitation token (`manage_roles`' `create_invitation`
-action), redeem it yourself — no prior account needed:
+action), redeem it yourself — no prior account needed. Either open
+`https://your-gateway-host/redeem-invitation?token=mtgi_...` in a browser (a plain,
+dependency-free page — enter your name, click Redeem), or:
 ```bash
 curl -X POST https://your-gateway-host/redeem-invitation \
   -H "Content-Type: application/json" \

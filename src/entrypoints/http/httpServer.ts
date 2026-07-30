@@ -213,6 +213,95 @@ async function handleLogin(req: Request, res: Response, deps: Dependencies): Pro
  *  InvitationRedemptionHandler). Not rate-limited by identity (there isn't one yet); the
  *  token itself is the rate limit — one use, then it's dead regardless of how many times
  *  someone retries it. */
+/** A plain, dependency-free HTML page for redeeming an invitation without needing to
+ *  know curl/an API client at all — everything in-line, no build step, no external JS.
+ *  The actual redemption still happens through the same POST /redeem-invitation this
+ *  page calls via fetch — this is a UI in front of that, not a second code path (no new
+ *  validation/business logic lives here). Deliberately unauthenticated for the same
+ *  reason POST /redeem-invitation is. */
+function handleRedeemInvitationPage(_req: Request, res: Response): void {
+  res.status(200).type("html").send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Trust Gateway — redeem invitation</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 480px; margin: 3rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 1.2rem; }
+  label { display: block; margin-top: 1rem; font-size: 0.9rem; color: #444; }
+  input { width: 100%; padding: 0.5rem; margin-top: 0.25rem; box-sizing: border-box; font-size: 1rem; }
+  button { margin-top: 1.5rem; padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: 0.6; }
+  #result { margin-top: 1.5rem; padding: 1rem; border-radius: 6px; display: none; white-space: pre-wrap; word-break: break-all; }
+  #result.success { background: #eafbea; display: block; }
+  #result.error { background: #fdecea; display: block; }
+  code { background: #f0f0f0; padding: 0.15rem 0.35rem; border-radius: 3px; }
+</style>
+</head>
+<body>
+<h1>Redeem your invitation</h1>
+<p>One-time use — once redeemed, this token stops working. Your API key is shown exactly once below; save it somewhere safe (a password manager, not a chat log).</p>
+
+<label for="token">Invitation token</label>
+<input id="token" placeholder="mtgi_..." autocomplete="off">
+
+<label for="name">Your name</label>
+<input id="name" placeholder="e.g. jane-doe" autocomplete="off">
+
+<button id="submit">Redeem</button>
+
+<div id="result"></div>
+
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const tokenParam = params.get("token");
+  if (tokenParam) document.getElementById("token").value = tokenParam;
+
+  document.getElementById("submit").addEventListener("click", async () => {
+    const token = document.getElementById("token").value.trim();
+    const name = document.getElementById("name").value.trim();
+    const button = document.getElementById("submit");
+    const result = document.getElementById("result");
+    result.className = "";
+    result.style.display = "none";
+
+    if (!token || !name) {
+      result.className = "error";
+      result.textContent = "Both fields are required.";
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = "Redeeming...";
+    try {
+      const res = await fetch("/redeem-invitation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, name }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        result.className = "error";
+        result.textContent = body.error || "Redemption failed.";
+      } else {
+        result.className = "success";
+        result.innerHTML = "Welcome, <code>" + body.userName + "</code>. Your API key (shown once):<br><br><code>" + body.apiKey + "</code>";
+      }
+    } catch (error) {
+      result.className = "error";
+      result.textContent = "Network error: " + (error instanceof Error ? error.message : String(error));
+    } finally {
+      button.disabled = false;
+      button.textContent = "Redeem";
+    }
+  });
+</script>
+</body>
+</html>
+`);
+}
+
 async function handleRedeemInvitation(req: Request, res: Response, deps: Dependencies): Promise<void> {
   const { token, name } = req.body as { token?: unknown; name?: unknown };
   if (typeof token !== "string" || !token || typeof name !== "string" || !name) {
@@ -380,6 +469,7 @@ async function main(): Promise<void> {
   const app = createMcpExpressApp({ host: config.host, allowedHosts: config.allowedHosts as string[] | undefined });
   app.get("/health", safely((req, res) => handleHealth(req, res, deps)));
   app.post("/login", safely((req, res) => handleLogin(req, res, deps)));
+  app.get("/redeem-invitation", (req, res) => handleRedeemInvitationPage(req, res));
   app.post("/redeem-invitation", safely((req, res) => handleRedeemInvitation(req, res, deps)));
   app.post("/logout", safely((req, res) => handleLogout(req, res, deps)));
   app.post("/mcp", safely((req, res) => handleMcpPost(req, res, deps)));

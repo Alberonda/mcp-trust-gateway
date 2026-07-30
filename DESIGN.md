@@ -195,6 +195,14 @@ lived only in `scripts/lib/`, not reachable at runtime at all). Two ways now, bo
   server name) alongside its existing machine-readable `status` — purely additive, the
   existing `status` values are unchanged for anything already depending on them.
 
+- **`GET /redeem-invitation` — a plain HTML page, added after actually walking a real
+  user through the curl-based flow and finding it wasn't genuinely self-service for
+  anyone who isn't comfortable with an API client.** Dependency-free (inline CSS/JS, no
+  build step, no framework) — pre-fills the token from `?token=...`, calls the *same*
+  `POST /redeem-invitation` via `fetch` rather than duplicating any validation logic, and
+  shows the resulting API key once. Deliberately unauthenticated for the identical reason
+  the POST route already is.
+
 See `OPERATIONS.md` for the actual day-to-day playbook this enables, and
 `.devin/agent-instructions-template.md` for a template that tells an agent to use this
 gateway's meta-tools instead of connecting to a real MCP server directly — worth being

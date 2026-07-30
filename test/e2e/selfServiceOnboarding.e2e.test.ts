@@ -131,6 +131,15 @@ test(
         await adminClient.close();
       }
 
+      // The plain HTML redemption page exists and pre-fills the token from the query
+      // string's server-rendered markup point of view (the actual pre-fill happens
+      // client-side in a real browser, which this test can't execute -- see the page's
+      // own script -- but the page itself must at least be real, unauthenticated HTML).
+      const pageResponse = await fetch(`${baseUrl}/redeem-invitation?token=${invitationToken}`);
+      assert.equal(pageResponse.status, 200);
+      assert.match(pageResponse.headers.get("content-type") ?? "", /text\/html/);
+      assert.match(await pageResponse.text(), /Redeem your invitation/);
+
       // Step 2: a brand new person, with NO identity/API key at all, redeems it over real
       // HTTP against the same real built httpServer.js.
       const newPersonName = `e2e-onboarding-newbie-${suffix}`;
