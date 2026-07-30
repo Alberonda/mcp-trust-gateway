@@ -133,7 +133,55 @@ for the schema itself.
 ## Backlog
 
 **Design/architecture**
-- [ ] `find_tool` only does substring matching — no synonyms/semantic search.
+- [ ] **`find_tool`/connection design, scoped 2026-07-29** — two related gaps found in
+      the same conversation, with one fix for both:
+      1. `find_tool` only does substring matching — no synonyms/semantic search.
+      2. Every accessible server is connected (subprocess spawned) at session start,
+         for every session, even if that session only ever ends up calling one of them
+         — necessary today because `find_tool` needs to call `listTools()` on a live
+         connection to know what a server offers before it can search across them.
+
+      **Researched how real tool-heavy agent systems solve this** (LangChain's own
+      "tool retrieval" pattern, the ToolReAGt paper (ACL 2025), and OSS projects
+      ToolScope/ToolScout/tool-selector-cascade) — all converge on the same cascade:
+      embeddings + cosine similarity as a cheap first filter (~20ms, local, ~$0),
+      escalating to a reranker or a micro-LLM only past ~hundreds-to-thousands of
+      tools. At this project's real scale (tens of tools per role), only the first
+      stage is justified — a reranker/LLM stage would be pure overhead here.
+
+      **Proposed design**: decouple *knowing what a server offers* from *being
+      connected to it*.
+      - A `tool_catalog` table: one row per (server, tool) — name, description, and an
+        embedding vector, plus when it was last refreshed.
+      - Populated lazily, as a side effect of a connection that would have happened
+        anyway (a server needing a credential has no shared default to catalog it
+        with up front — see "Remove the shared default upstream credential" — so the
+        first user who successfully connects with their own credential builds it;
+        the catalog itself — names/descriptions — isn't sensitive and doesn't need to
+        be scoped to who built it). Credential-less servers can be cataloged
+        immediately on registration.
+      - Refreshed opportunistically: whenever `call_tool` connects to a server for
+        real (which already happens), refresh its catalog entry if missing or older
+        than a TTL (a week, say) — no new scheduler/cron process needed. A manual
+        `refresh_catalog` admin action covers "I know it changed, don't wait."
+      - `find_tool` embeds the query and searches the cache directly — zero
+        connections. `call_tool` becomes the *only* thing that ever connects, lazily,
+        to exactly the one server it needs — this is what actually fixes gap 2, as a
+        consequence of fixing gap 1 correctly, not a separate change.
+      - Embeddings: a small local model (`all-MiniLM-L6-v2` class, ~90MB) via
+        `@xenova/transformers` (pure JS/WASM, no Python, no GPU needed) — not an
+        external API (would add a mandatory network call + secret to a path that
+        runs on every query, and break offline/stdio use) and not a full LLM (this is
+        a textbook embedding-similarity task; an LLM would be slower and costlier for
+        no quality gain at this scale).
+      - Real tradeoff accepted: connections drop from "every accessible server, every
+        session" to "once per server, refreshed occasionally" — not to zero. There's
+        no way to know what a server offers without ever having connected to it.
+      - Not yet decided: exact TTL, whether embeddings run inline in
+        `entrypoints/http/httpServer.ts`/`entrypoints/stdio/index.ts` or a small
+        dedicated module, and whether `pgvector` is worth adding for indexed search
+        versus a plain in-memory linear scan (likely fine at this project's scale —
+        tens to low hundreds of cached tools, not millions).
 - [ ] TOCTOU window: a mid-flight permission revoke doesn't stop a call already in flight.
 - [ ] No per-server error isolation for HTTP mode's relay path specifically — the local
       path already isolates failures (`connectAccessibleServers.ts`); relay dispatch
