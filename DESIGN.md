@@ -242,6 +242,34 @@ for the schema itself.
       between sessions and a retry-once-then-skip wrapper, rather than assuming
       real infrastructure behaves like a local one.
 
+      **Real improvement points this run surfaced**, from the step-by-step breakdown,
+      not just the totals:
+      - **`find_tool` costs 700-2600ms even against an already-warm catalog** — far more
+        than the ~1ms/embedding + one Postgres read the design assumed. Not yet root-
+        caused: candidates are the embedding model's cold-start cost repeating on every
+        fresh session (a new process per session today, no pooling — see below), Neon's
+        network round-trip (a hosted, remote Postgres, not the low-latency local one
+        integration tests use), or something else not yet isolated. Worth a real,
+        instrumented breakdown before assuming which one it is.
+      - **The dominant cost by far is the real upstream API call itself, not the
+        gateway** — the first real `call_tool` against Jira/SonarQube took 7-9 seconds
+        in BOTH direct and gateway modes, identically slow either way. This means
+        "no connection pooling" (already in this backlog) would save less than
+        previously assumed — pooling a connection doesn't make Jira itself answer
+        faster. Re-scope that backlog item's expected payoff accordingly.
+      - **The embedding-miss retry in this benchmark is more optimistic than real
+        life**: it retries with a *known-good* query the benchmark script already had.
+        A real agent has no such fallback — a genuine miss with no retry path might
+        just fail to find the tool at all. Worth a real fallback layer (e.g. combining
+        semantic ranking with a plain substring match as a second pass, so a tool whose
+        name/keywords literally appear in the query is never missed purely on embedding
+        similarity) rather than relying on an agent happening to rephrase well.
+      - **Neon connection-pool exhaustion under rapid session churn might not be only a
+        benchmark artifact** — HTTP mode serves genuinely concurrent real users, each
+        opening their own Postgres pool's worth of connections on session start/end.
+        Worth checking under real concurrent load, not just this benchmark's sequential
+        one, before assuming it's fine.
+
 **Production readiness**
 - [ ] No automated tests for HTTP mode's own composition root wiring (only stdio mode's,
       via `test/e2e/`) — manual smoke test only (`scripts/manual_test_http.ts`).
