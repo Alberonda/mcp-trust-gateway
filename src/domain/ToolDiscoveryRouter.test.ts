@@ -7,6 +7,9 @@ import type { NewUpstreamServer, UpstreamServerRepository } from "../ports/Upstr
 import type { EncryptedUpstreamCredential, Identity, Role, UpstreamServer, User } from "./types.js";
 import type { UserCredentialRepository } from "../ports/UserCredentialRepository.js";
 import type { UserRepository } from "../ports/UserRepository.js";
+import type { UpstreamConnectionProvider } from "../ports/UpstreamConnectionProvider.js";
+import type { Embedder } from "../ports/Embedder.js";
+import type { NewToolCatalogEntry, ToolCatalogEntry, ToolCatalogRepository } from "../ports/ToolCatalogRepository.js";
 import { AesGcmCredentialVault } from "../adapters/security/CredentialVault.js";
 import { AdminToolHandler } from "./AdminToolHandler.js";
 import { SelfServiceHandler } from "./SelfServiceHandler.js";
@@ -20,7 +23,35 @@ import type { ToolCallResult, UpstreamToolClient } from "../ports/UpstreamToolCl
  * gateway is connected to N ≥ 2 upstream servers." Every test below either proves that
  * holds or would fail loudly if it didn't — this is the automated version of the manual
  * verification plan, not a description of intended behavior.
+ *
+ * find_tool's semantic ranking uses a small, deterministic FakeEmbedder (keyword
+ * presence as a one-hot-ish vector) rather than the real model — enough to test
+ * filtering/ranking/permission interaction precisely and fast, without depending on a
+ * loaded transformer model in every unit test run. See
+ * adapters/embeddings/LocalEmbedder.test.ts for real-model coverage.
  */
+
+const KEYWORDS = ["read", "file", "directory", "message", "delete"];
+
+class FakeEmbedder implements Embedder {
+  async embed(text: string): Promise<number[]> {
+    const lower = text.toLowerCase();
+    return KEYWORDS.map((keyword) => (lower.includes(keyword) ? 1 : 0));
+  }
+}
+
+class FakeToolCatalogRepository implements ToolCatalogRepository {
+  private readonly byServer = new Map<string, ToolCatalogEntry[]>();
+  async findByServer(serverId: string): Promise<ToolCatalogEntry[]> {
+    return this.byServer.get(serverId) ?? [];
+  }
+  async replaceForServer(serverId: string, entries: readonly NewToolCatalogEntry[]): Promise<void> {
+    this.byServer.set(
+      serverId,
+      entries.map((entry) => ({ ...entry, refreshedAt: new Date() })),
+    );
+  }
+}
 
 class FakePermissionRepository implements PermissionRepository {
   /** allowedTools maps serverId -> set of tool names allowed (or "*" for every tool). */
@@ -106,6 +137,12 @@ class FakeUserRepository implements UserRepository {
   async remove(): Promise<void> {}
 }
 
+class NullConnectionProvider implements UpstreamConnectionProvider {
+  async connect(): Promise<never> {
+    throw new Error("not used in these tests");
+  }
+}
+
 /** Builds a real SelfServiceHandler wired to fakes — none of the tests in this file
  *  exercise list_services/register_my_credential's own behavior directly (see
  *  SelfServiceHandler.test.ts for that); this only exists so ToolDiscoveryRouter has a
@@ -161,13 +198,8 @@ function buildHandler(
   tools: Array<{ name: string; description: string }>,
   permissions: PermissionRepository,
 ): ToolCallHandler {
-  return new ToolCallHandler(
-    identity,
-    server(serverName),
-    permissions,
-    new NullAuditLogRepository(),
-    new FakeUpstreamToolClient(tools),
-  );
+  const client = new FakeUpstreamToolClient(tools);
+  return new ToolCallHandler(identity, server(serverName), permissions, new NullAuditLogRepository(), () => Promise.resolve(client));
 }
 
 /** Most tests don't care about the router's own audit log — this defaults to a no-op one
@@ -177,7 +209,7 @@ function buildRouter(
   auditLog: AuditLogRepository = new NullAuditLogRepository(),
   adminHandler?: AdminToolHandler,
 ) {
-  return new ToolDiscoveryRouter(handlers, identity, auditLog, buildSelfService(), adminHandler);
+  return new ToolDiscoveryRouter(handlers, identity, auditLog, buildSelfService(), new FakeToolCatalogRepository(), new FakeEmbedder(), adminHandler);
 }
 
 test("find_tool only surfaces servers/tools this identity has a grant for", async () => {
@@ -191,7 +223,7 @@ test("find_tool only surfaces servers/tools this identity has a grant for", asyn
   assert.deepEqual(
     results.map((r) => `${r.server}:${r.name}`),
     ["a:read_file"],
-    "server b's tool must never appear when there is no permission for it, even though it was connected",
+    "server b's tool must never appear when there is no permission for it, even though its catalog was built",
   );
 });
 
@@ -216,23 +248,57 @@ test("find_tool respects tool-level grants, not just server-level access", async
   );
 });
 
-test("find_tool matches by name or description, case-insensitively", async () => {
+test("find_tool ranks the most semantically similar tool first", async () => {
   const permissions = new FakePermissionRepository({ "server-a": "*" });
   const handlerA = buildHandler(
     "a",
     [
+      { name: "send_message", description: "Sends a message to a channel" },
       { name: "read_file", description: "Reads the contents of a file" },
-      { name: "list_directory", description: "Lists files in a directory" },
     ],
     permissions,
   );
   const router = buildRouter([handlerA]);
 
-  const byName = await router.findTool("READ");
-  const byDescription = await router.findTool("directory");
+  const results = await router.findTool("read a file");
 
-  assert.deepEqual(byName.map((r) => r.name), ["read_file"]);
-  assert.deepEqual(byDescription.map((r) => r.name), ["list_directory"]);
+  assert.deepEqual(results.map((r) => r.name), ["read_file", "send_message"], "the genuinely relevant tool must rank ahead of the unrelated one");
+});
+
+test("find_tool caps results at MAX_FIND_TOOL_RESULTS across every server combined, ranked globally not per-server", async () => {
+  const permissions = new FakePermissionRepository({ "server-a": "*" });
+  // 15 tools that all match "delete" equally (irrelevant noise) plus one genuinely
+  // strong match for "read a file" — the strong match must survive the cap even though
+  // it's outnumbered, because ranking is global, not "top N per server" or first-seen.
+  const noise = Array.from({ length: 15 }, (_, i) => ({ name: `delete_thing_${i}`, description: "Deletes something" }));
+  const relevant = { name: "read_file", description: "Reads the contents of a file" };
+  const handlerA = buildHandler("a", [...noise, relevant], permissions);
+  const router = buildRouter([handlerA]);
+
+  const results = await router.findTool("read a file");
+
+  assert.ok(results.length <= 10, "find_tool must never return more than MAX_FIND_TOOL_RESULTS for a non-empty query");
+  assert.ok(
+    results.some((r) => r.name === "read_file"),
+    "the one genuinely relevant tool must survive the cap even though 15 irrelevant tools were also candidates",
+  );
+});
+
+test("find_tool with an empty query returns everything permitted, unranked", async () => {
+  const permissions = new FakePermissionRepository({ "server-a": "*" });
+  const handlerA = buildHandler(
+    "a",
+    [
+      { name: "read_file", description: "Reads a file" },
+      { name: "send_message", description: "Sends a message" },
+    ],
+    permissions,
+  );
+  const router = buildRouter([handlerA]);
+
+  const results = await router.findTool("");
+
+  assert.deepEqual(results.map((r) => r.name).sort(), ["read_file", "send_message"]);
 });
 
 test("call_tool routes to the correct server's handler", async () => {
@@ -297,7 +363,7 @@ test("handleMetaToolCall('find_tool', ...) returns matching tools as JSON text",
   const handlerA = buildHandler("a", [{ name: "read_file", description: "reads a file" }], permissions);
   const router = buildRouter([handlerA]);
 
-  const result = await router.handleMetaToolCall("find_tool", { query: "read" });
+  const result = await router.handleMetaToolCall("find_tool", { query: "" });
 
   const parsed = JSON.parse(result.content?.[0]?.text ?? "[]");
   assert.deepEqual(parsed, [{ server: "a", name: "read_file", description: "reads a file" }]);
@@ -364,6 +430,10 @@ test("listMetaTools includes manage_roles only when an adminHandler is supplied"
     new FakeUserRepository(),
     new FakeUpstreamServerRepository(),
     new FakeUserCredentialRepository(),
+    new NullConnectionProvider(),
+    new FakeToolCatalogRepository(),
+    new FakeEmbedder(),
+    identity,
   );
   const router = buildRouter([], new NullAuditLogRepository(), adminHandler);
 

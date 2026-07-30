@@ -18,7 +18,12 @@ export class ToolCallHandler {
     private readonly upstreamServer: UpstreamServer,
     private readonly permissions: PermissionRepository,
     private readonly auditLog: AuditLogRepository,
-    private readonly upstreamClient: UpstreamToolClient,
+    /** Connects on first use and is expected to memoize the result itself (see
+     *  domain/buildAccessibleServerHandlers.ts) — NOT called at all for a denied
+     *  callTool(), which is the entire point of deferring connection to here instead
+     *  of connecting every accessible server up front regardless of whether a given
+     *  session ever uses it. */
+    private readonly connectClient: () => Promise<UpstreamToolClient>,
     /** Injectable so tests get deterministic, non-flaky duration_ms values. */
     private readonly now: () => number = Date.now,
   ) {}
@@ -29,11 +34,20 @@ export class ToolCallHandler {
     return this.upstreamServer.name;
   }
 
+  /** Which upstream server this handler talks to, in full — ToolDiscoveryRouter needs
+   *  the id (not just the name) to look up/refresh this server's tool_catalog entry. */
+  get server(): UpstreamServer {
+    return this.upstreamServer;
+  }
+
   /** tools/list itself is not permission-gated at this level — knowing a tool exists is
    *  not the same as being allowed to call it. ToolDiscoveryRouter is what actually
-   *  enforces per-tool visibility during discovery, via getAllowedToolNames() below. */
+   *  enforces per-tool visibility during discovery, via getAllowedToolNames() below.
+   *  Connects (or reuses the already-open connection) — the one caller of this,
+   *  ToolDiscoveryRouter's catalog-building, only calls it when it actually needs to. */
   async listTools(): Promise<unknown> {
-    return this.upstreamClient.listTools();
+    const client = await this.connectClient();
+    return client.listTools();
   }
 
   /** Every tool this identity may call on this server, in one query — used by
@@ -60,7 +74,8 @@ export class ToolCallHandler {
     }
 
     try {
-      const result = await this.upstreamClient.callTool(toolName, args);
+      const client = await this.connectClient();
+      const result = await client.callTool(toolName, args);
       await this.auditLog.write({
         identityId: this.identity.id,
         serverName: this.upstreamServer.name,

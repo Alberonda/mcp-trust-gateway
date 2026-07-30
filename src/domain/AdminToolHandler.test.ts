@@ -2,10 +2,50 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RoleRepository } from "../ports/RoleRepository.js";
 import type { NewUpstreamServer, UpstreamServerRepository } from "../ports/UpstreamServerRepository.js";
-import type { EncryptedUpstreamCredential, Role, UpstreamServer, User } from "./types.js";
+import type { EncryptedUpstreamCredential, Identity, Role, UpstreamServer, User } from "./types.js";
 import type { UserCredentialRepository } from "../ports/UserCredentialRepository.js";
 import type { UserRepository } from "../ports/UserRepository.js";
+import type { ConnectedUpstream, UpstreamConnectionProvider } from "../ports/UpstreamConnectionProvider.js";
+import type { NewToolCatalogEntry, ToolCatalogEntry, ToolCatalogRepository } from "../ports/ToolCatalogRepository.js";
+import type { Embedder } from "../ports/Embedder.js";
 import { AdminToolHandler } from "./AdminToolHandler.js";
+
+const testIdentity: Identity = { id: "identity-1", userId: "user-admin", name: "admin", apiKeyHash: "irrelevant", isActive: true };
+
+class FakeUpstreamConnectionProvider implements UpstreamConnectionProvider {
+  public closed = false;
+  constructor(private readonly listToolsResult: unknown = { tools: [] }) {}
+  async connect(): Promise<ConnectedUpstream> {
+    return {
+      client: { listTools: async () => this.listToolsResult, callTool: async () => ({ content: [] }) },
+      close: async () => {
+        this.closed = true;
+      },
+    };
+  }
+}
+
+class FailingConnectionProvider implements UpstreamConnectionProvider {
+  async connect(): Promise<ConnectedUpstream> {
+    throw new Error("connection refused");
+  }
+}
+
+class FakeToolCatalogRepository implements ToolCatalogRepository {
+  public readonly byServer = new Map<string, ToolCatalogEntry[]>();
+  async findByServer(serverId: string): Promise<ToolCatalogEntry[]> {
+    return this.byServer.get(serverId) ?? [];
+  }
+  async replaceForServer(serverId: string, entries: readonly NewToolCatalogEntry[]): Promise<void> {
+    this.byServer.set(serverId, entries.map((e) => ({ ...e, refreshedAt: new Date() })));
+  }
+}
+
+class FakeEmbedder implements Embedder {
+  async embed(text: string): Promise<number[]> {
+    return [text.length];
+  }
+}
 
 class FakeRoleRepository implements RoleRepository {
   public readonly roles = new Map<string, Role>();
@@ -103,12 +143,16 @@ class FakeUserCredentialRepository implements UserCredentialRepository {
   }
 }
 
-function buildHandler() {
+function buildHandler(options: { connectionProvider?: UpstreamConnectionProvider } = {}) {
   const roles = new FakeRoleRepository();
   const users = new FakeUserRepository();
   const servers = new FakeUpstreamServerRepository([{ id: "s1", name: "sonarqube", command: "irrelevant", args: [], requiresRelay: false }]);
   const credentials = new FakeUserCredentialRepository();
-  return { handler: new AdminToolHandler(roles, users, servers, credentials), roles, users, servers, credentials };
+  const connectionProvider = options.connectionProvider ?? new FakeUpstreamConnectionProvider();
+  const toolCatalog = new FakeToolCatalogRepository();
+  const embedder = new FakeEmbedder();
+  const handler = new AdminToolHandler(roles, users, servers, credentials, connectionProvider, toolCatalog, embedder, testIdentity);
+  return { handler, roles, users, servers, credentials, connectionProvider, toolCatalog, embedder };
 }
 
 test("create_role creates a role and reports it", async () => {
@@ -212,4 +256,44 @@ test("an unknown action returns a clear error listing the valid ones", async () 
 
   assert.equal(result.isError, true);
   assert.match(result.content?.[0]?.text ?? "", /Unknown action/);
+});
+
+test("refresh_catalog connects, lists tools, embeds them, and replaces the server's cache", async () => {
+  const connectionProvider = new FakeUpstreamConnectionProvider({ tools: [{ name: "search_issues", description: "Search Jira issues" }] });
+  const { handler, toolCatalog } = buildHandler({ connectionProvider });
+
+  const result = await handler.handle("refresh_catalog", { serverName: "sonarqube" });
+
+  assert.equal(result.isError, undefined);
+  assert.match(result.content?.[0]?.text ?? "", /1 tool/);
+  const entries = await toolCatalog.findByServer("s1");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].toolName, "search_issues");
+});
+
+test("refresh_catalog closes the connection it opened, even though it only needed it briefly", async () => {
+  const connectionProvider = new FakeUpstreamConnectionProvider();
+  const { handler } = buildHandler({ connectionProvider });
+
+  await handler.handle("refresh_catalog", { serverName: "sonarqube" });
+
+  assert.equal(connectionProvider.closed, true);
+});
+
+test("refresh_catalog on an unknown server returns a clear error instead of connecting to nothing", async () => {
+  const { handler } = buildHandler();
+
+  const result = await handler.handle("refresh_catalog", { serverName: "does-not-exist" });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content?.[0]?.text ?? "", /No server named/);
+});
+
+test("refresh_catalog surfaces a connection failure as a clear error instead of throwing", async () => {
+  const { handler } = buildHandler({ connectionProvider: new FailingConnectionProvider() });
+
+  const result = await handler.handle("refresh_catalog", { serverName: "sonarqube" });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content?.[0]?.text ?? "", /connection refused/);
 });

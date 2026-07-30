@@ -33,17 +33,20 @@ import { PostgresUserRepository } from "../../adapters/postgres/UserRepository.j
 import type { UserRepository } from "../../ports/UserRepository.js";
 import type { Identity } from "../../domain/types.js";
 import { AdminToolHandler } from "../../domain/AdminToolHandler.js";
-import { connectAccessibleServers } from "../../domain/connectAccessibleServers.js";
+import { buildAccessibleServerHandlers } from "../../domain/buildAccessibleServerHandlers.js";
 import { SelfServiceHandler } from "../../domain/SelfServiceHandler.js";
-import { ToolCallHandler } from "../../domain/ToolCallHandler.js";
 import { ToolDiscoveryRouter } from "../../domain/ToolDiscoveryRouter.js";
 import { PerSessionUpstreamConnectionProvider } from "../../adapters/mcp/UpstreamConnectionProvider.js";
-import type { ConnectedUpstream, UpstreamConnectionProvider } from "../../ports/UpstreamConnectionProvider.js";
+import type { UpstreamConnectionProvider } from "../../ports/UpstreamConnectionProvider.js";
 import { AesGcmCredentialVault } from "../../adapters/security/CredentialVault.js";
 import type { CredentialVault } from "../../ports/CredentialVault.js";
 import { InMemoryRelayAgentRegistry } from "../../adapters/relay/InMemoryRelayAgentRegistry.js";
 import { RelayUpstreamConnectionProvider } from "../../adapters/relay/RelayUpstreamConnectionProvider.js";
 import { RoutingUpstreamConnectionProvider } from "../../adapters/relay/RoutingUpstreamConnectionProvider.js";
+import { PostgresToolCatalogRepository } from "../../adapters/postgres/ToolCatalogRepository.js";
+import type { ToolCatalogRepository } from "../../ports/ToolCatalogRepository.js";
+import { LocalEmbedder } from "../../adapters/embeddings/LocalEmbedder.js";
+import type { Embedder } from "../../ports/Embedder.js";
 import { resolveIdentityFromAuthHeader, resolveIdentityFromSessionToken } from "./auth.js";
 import { HttpStatusError } from "./HttpStatusError.js";
 import type { HttpGatewayConfig } from "./httpConfig.js";
@@ -72,7 +75,10 @@ import type { RateLimiter } from "../../ports/RateLimiter.js";
 interface McpSession {
   readonly transport: StreamableHTTPServerTransport;
   readonly identityId: string;
-  readonly connectedUpstreams: readonly ConnectedUpstream[];
+  /** Closes every connection this session actually opened — see
+   *  buildAccessibleServerHandlers.ts; a server this session never used was never
+   *  connected in the first place. */
+  readonly closeUpstreams: () => Promise<void>;
 }
 
 interface Dependencies {
@@ -87,6 +93,8 @@ interface Dependencies {
   readonly roles: RoleRepository;
   readonly users: UserRepository;
   readonly vault: CredentialVault;
+  readonly toolCatalog: ToolCatalogRepository;
+  readonly embedder: Embedder;
   readonly rateLimiter: RateLimiter;
   readonly sessionTtlMinutes: number;
 }
@@ -99,19 +107,31 @@ async function createMcpSession(identity: Identity, deps: Dependencies): Promise
   const accessibleServerIds = await deps.permissions.findAccessibleServerIds(identity.userId);
   const accessibleServers = await deps.upstreamServers.findManyByIds(accessibleServerIds);
 
-  // Isolated per server — one misconfigured server (e.g. missing credentials) must never
-  // prevent connecting to every OTHER accessible server too (see
-  // gateway/connectAccessibleServers.ts's docstring for the real incident that found this).
-  const connectedServers = await connectAccessibleServers(accessibleServers, identity.userId, deps.userCredentials, deps.connectionProvider);
-  const connectedUpstreams = connectedServers.map(({ connected }) => connected);
-  const handlers = connectedServers.map(
-    ({ server, connected: { client } }) => new ToolCallHandler(identity, server, deps.permissions, deps.auditLog, client),
+  // Connects to nothing yet — each handler connects lazily on its own first real use
+  // (find_tool's cache miss, or call_tool), see buildAccessibleServerHandlers's docstring
+  // for why this replaced an eager connect-everything-up-front step.
+  const { handlers, closeAll: closeUpstreams } = buildAccessibleServerHandlers(
+    accessibleServers,
+    identity,
+    deps.userCredentials,
+    deps.connectionProvider,
+    deps.permissions,
+    deps.auditLog,
   );
   const selfService = new SelfServiceHandler(identity.userId, deps.permissions, deps.upstreamServers, deps.userCredentials, deps.vault);
   const adminHandler = (await deps.roles.isUserAdmin(identity.userId))
-    ? new AdminToolHandler(deps.roles, deps.users, deps.upstreamServers, deps.userCredentials)
+    ? new AdminToolHandler(
+        deps.roles,
+        deps.users,
+        deps.upstreamServers,
+        deps.userCredentials,
+        deps.connectionProvider,
+        deps.toolCatalog,
+        deps.embedder,
+        identity,
+      )
     : undefined;
-  const router = new ToolDiscoveryRouter(handlers, identity, deps.auditLog, selfService, adminHandler);
+  const router = new ToolDiscoveryRouter(handlers, identity, deps.auditLog, selfService, deps.toolCatalog, deps.embedder, adminHandler);
 
   const mcpServer = new Server({ name: "mcp-trust-gateway", version: "0.1.0" }, { capabilities: { tools: {} } });
   mcpServer.setRequestHandler(ListToolsRequestSchema, () => router.listMetaTools() as unknown as ServerResult);
@@ -127,12 +147,12 @@ async function createMcpSession(identity: Identity, deps: Dependencies): Promise
       mcpSessions.set(sessionId, mcpSession);
     },
   });
-  mcpSession = { transport, identityId: identity.id, connectedUpstreams };
+  mcpSession = { transport, identityId: identity.id, closeUpstreams };
 
   transport.onclose = () => {
     const sessionId = transport.sessionId;
     if (sessionId) mcpSessions.delete(sessionId);
-    Promise.all(connectedUpstreams.map((upstream) => upstream.close())).catch((error: unknown) => {
+    closeUpstreams().catch((error: unknown) => {
       console.error("[mcp-trust-gateway:http] Error closing upstream connections for a closed session:", error);
     });
   };
@@ -283,6 +303,8 @@ function buildDependencies(config: HttpGatewayConfig): { deps: Dependencies; rel
     auditLog: new SafeAuditLogRepository(new PostgresAuditLogRepository(pool)),
     sessions: new PostgresSessionRepository(pool),
     connectionProvider,
+    toolCatalog: new PostgresToolCatalogRepository(pool),
+    embedder: new LocalEmbedder(),
     rateLimiter: new InMemoryTokenBucketRateLimiter(config.rateLimit.maxTokens, config.rateLimit.refillPerSecond / 1000),
     sessionTtlMinutes: config.sessionTtlMinutes,
   };
@@ -361,7 +383,7 @@ async function main(): Promise<void> {
     await Promise.all(
       [...mcpSessions.values()].map(async (mcpSession) => {
         await mcpSession.transport.close();
-        await Promise.all(mcpSession.connectedUpstreams.map((upstream) => upstream.close()));
+        await mcpSession.closeUpstreams();
       }),
     );
     server.close(() => process.exit(0));

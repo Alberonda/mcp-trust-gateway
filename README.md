@@ -79,11 +79,11 @@ sit behind the gateway:
 
 | Tool | Who sees it | Does |
 |---|---|---|
-| `find_tool` | Everyone | Search real tools across servers you're permitted on |
+| `find_tool` | Everyone | Semantically search real tools across servers you're permitted on (local embeddings, no data leaves the machine) |
 | `call_tool` | Everyone | Call a real tool discovered via `find_tool` |
 | `list_services` | Everyone | See every registered server and your status: `ready`, `needs_credential`, `not_permitted` |
 | `register_my_credential` | Everyone | Set your own credential for a server you're already permitted on — never grants permission itself |
-| `manage_roles` | Admins only | Create/delete roles, assign/unassign, manage users and credentials — structurally absent from a non-admin's session, not just hidden |
+| `manage_roles` | Admins only | Create/delete roles, assign/unassign, manage users/credentials, force a server's tool catalog to refresh — structurally absent from a non-admin's session, not just hidden |
 
 Permissions are granted to **roles** (`migrations/007_roles.sql`), not individual
 users — your effective access is the union of every role you hold.

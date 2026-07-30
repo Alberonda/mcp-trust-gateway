@@ -79,15 +79,20 @@ function buildHandler(options: {
 }) {
   const auditLog = options.auditLog ?? new FakeAuditLogRepository();
   const upstreamClient = options.upstreamClient ?? new FakeUpstreamToolClient();
+  let connectCalls = 0;
+  const connectClient = () => {
+    connectCalls++;
+    return Promise.resolve(upstreamClient);
+  };
   const handler = new ToolCallHandler(
     testIdentity,
     testServer,
     new FakePermissionRepository(options.allowed ?? true),
     auditLog,
-    upstreamClient,
+    connectClient,
     options.clock,
   );
-  return { handler, auditLog, upstreamClient };
+  return { handler, auditLog, upstreamClient, connectCalls: () => connectCalls };
 }
 
 test("listTools delegates directly to the upstream client", async () => {
@@ -122,6 +127,23 @@ test("a denied call never reaches the upstream client", async () => {
   await handler.callTool("delete_everything", {});
 
   assert.equal(upstreamClient.callToolInvocations.length, 0, "upstream must not be called when permission is denied");
+});
+
+test("a denied call never even connects — the whole point of deferring connection past the permission check", async () => {
+  const { handler, connectCalls } = buildHandler({ allowed: false });
+
+  await handler.callTool("delete_everything", {});
+
+  assert.equal(connectCalls(), 0, "connectClient must never be invoked for a denied call");
+});
+
+test("ToolCallHandler itself does not memoize connectClient — that's the caller's job (see buildAccessibleServerHandlers)", async () => {
+  const { handler, connectCalls } = buildHandler({ allowed: true });
+
+  await handler.callTool("read_file", {});
+  await handler.callTool("read_file", {});
+
+  assert.equal(connectCalls(), 2);
 });
 
 test("a denied call logs 'denied' and returns a clear, non-throwing MCP error result", async () => {
@@ -190,7 +212,7 @@ test("a successful call still returns its real result even if writing the audit 
     testServer,
     new FakePermissionRepository(true),
     safeAuditLog,
-    upstreamClient,
+    () => Promise.resolve(upstreamClient),
   );
 
   const result = await handler.callTool("read_file", {});
