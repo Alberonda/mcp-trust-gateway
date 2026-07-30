@@ -1,0 +1,35 @@
+version: 2
+updates:
+  # Root gateway package (src/, scripts/, test/).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # bridge/ and relay-agent/ are genuinely separate published packages (see their own
+  # package.json), each with their own lockfile -- tracked independently rather than
+  # relying on the root update to somehow cover them too.
+  - package-ecosystem: npm
+    directory: /bridge
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /relay-agent
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # The CI workflow's own actions (actions/checkout, actions/setup-node, ...).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Thin stdio-to-HTTP relay for mcp-trust-gateway's HTTP mode -- holds only your GATEWAY_API_KEY locally, never the database URL or master encryption key. See ../README.md's 'Connecting without a local process' section.",
   "private": false,
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "mcp-trust-gateway-bridge": "dist/index.js"

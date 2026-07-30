@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "MCP proxy adding an auth/permission/audit trust layer between agents and real MCP servers",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",

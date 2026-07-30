@@ -321,14 +321,35 @@ for the schema itself.
 - [ ] Nothing supervises the process (no systemd/PM2/restart policy).
 - [ ] No Postgres backup strategy documented.
 - [ ] No metrics/alerting beyond the audit log itself.
-- [ ] No dependency-update process.
-- [ ] Two Neon `users` rows exist for the same real person (should be two `identities`
-      under one `user` instead — the exact scenario that split was designed for).
+- [x] ~~No dependency-update process~~ — done 2026-07-30: `.github/dependabot.yml`,
+      tracking the root package, `bridge/`, and `relay-agent/` independently (each has
+      its own `package.json`/lockfile), plus the CI workflow's own actions.
+- [x] ~~Two Neon `users` rows exist for the same real person~~ — done 2026-07-30.
+      Reassigned the `alberto-render-deployment` identity's `user_id` to the same user
+      as `alberto-devin-cli` (kept the one that already had a real credential, to avoid
+      any re-encryption), renamed that user to `alberto`, then deleted the now-empty
+      duplicate row — `identities.user_id`/`user_roles.user_id`/`sessions.user_id` all
+      cascade `ON DELETE CASCADE`, `user_credentials` had zero rows on the duplicate, so
+      nothing was lost; the 13 old session rows that did cascade-delete are ephemeral
+      and get re-issued on next login anyway. Verified for real afterward: the
+      surviving user's roles (admin+developer) and its sonarqube credential still
+      resolve correctly over a live stdio session.
 
 **Distribution/packaging**
-- [ ] No `LICENSE` file.
+- [x] ~~No `LICENSE` file~~ — done 2026-07-30: Apache 2.0, matching `bridge/` and
+      `relay-agent/`'s `package.json` `license` fields (both are genuinely published
+      packages, not just internal code).
 - [ ] Not packaged for easy install (no Docker image, no npm package).
-- [ ] No `docker-compose.yml` to bring up Postgres + the gateway together.
+- [x] ~~No `docker-compose.yml` to bring up Postgres + the gateway together~~ — done
+      2026-07-30: `docker-compose.yml` + `docker/init-test-db.sql`, local development
+      only (never the real deployment, which stays on a real managed Postgres — see
+      README's warning). Verified for real: `docker compose up -d` then `npm run
+      migrate` against it applies all 9 migrations cleanly, both `mcp_trust_gateway` and
+      `mcp_trust_gateway_test` exist as the init script creates the second one the
+      official postgres image doesn't make on its own. Only Postgres is containerized —
+      the gateway itself still runs directly on the host, since stdio mode spawns real
+      local MCP servers (e.g. Jira's wrapper reads macOS Keychain) that a container
+      can't reach the same way.
 
 ## Infrastructure requirements
 
