@@ -21,6 +21,10 @@ npm run build
 TEST_GATEWAY_API_KEY=<from above> npx tsx scripts/manual_test_client.ts
 ```
 
+For local development only (never for the real deployment — see the warning above),
+`docker compose up -d` brings up a Postgres matching `.env.example`'s defaults exactly,
+with both databases integration tests need already created.
+
 **`GATEWAY_ENCRYPTION_KEY` is a deployment-wide secret, not a per-machine or per-user
 one.** Generate it exactly once per deployment (one shared `DATABASE_URL`), then copy the
 *same* value to every machine that runs the gateway against that database — in stdio
@@ -110,3 +114,7 @@ npm run test:all          # typecheck + test + test:integration
 `.github/workflows/ci.yml` runs all of the above on every push/PR against a Postgres
 service container that exists only for that job — never the same database as local dev
 or the real deployment.
+
+## License
+
+[Apache 2.0](./LICENSE).

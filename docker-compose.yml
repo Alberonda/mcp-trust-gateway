@@ -1,0 +1,31 @@
+# Local development only -- brings up a Postgres matching .env.example's defaults, with
+# both the main database and the separate one integration tests need (see
+# test/integration/setupDatabase.ts for why they must stay separate). Never used for the
+# real deployment or CI (see DESIGN.md/README.md's "Setup" -- those point at a real,
+# managed, backed-up Postgres like Neon instead).
+#
+# Usage:
+#   docker compose up -d
+#   npm run migrate
+#   npx tsx scripts/seed_test_setup.ts
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: mcp_trust_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - mcp-trust-gateway-postgres:/var/lib/postgresql/data
+      - ./docker/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mcp-trust-gateway-postgres:

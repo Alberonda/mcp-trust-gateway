@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Executes MCP server subprocesses on behalf of a remote mcp-trust-gateway deployment, for servers only reachable from this machine's network -- holds no database credentials and no master encryption key, only a real GATEWAY_API_KEY and, per active call, whatever decrypted env the gateway sends it. See ../DESIGN.md's 'Role-based access control' postscripts for why this exists.",
   "private": false,
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "mcp-trust-gateway-relay-agent": "dist/index.js"
