@@ -40,6 +40,11 @@ what these can cover.
   queries. Needs `GATEWAY_API_KEY`/`DATABASE_URL`/`GATEWAY_ENCRYPTION_KEY` for an identity
   permitted on real "jira" and "sonarqube" servers (only read-only tools are called —
   see the script's own plan). Writes `benchmark-results.json` and a self-contained
-  `benchmark-report.html` (Chart.js via CDN, open directly in a browser) — both
-  gitignored, regenerate rather than trust a stale copy. See DESIGN.md for what a real
-  run found.
+  `benchmark-report.html` (Chart.js via CDN, open directly in a browser), including a
+  "Conclusions" section computed directly from that run's own numbers — both files are
+  tracked as a dated snapshot of one real run (see their own commit for when), not a
+  live guarantee; re-run for current numbers rather than trusting an old copy. See
+  DESIGN.md for what this snapshot found.
+- `regen_benchmark_report.ts` — rebuilds `benchmark-report.html` from an existing
+  `benchmark-results.json` without re-running any real sessions — only useful after
+  changing the report's own rendering/analysis code, not the measurements themselves.
