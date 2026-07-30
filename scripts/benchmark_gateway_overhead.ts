@@ -9,7 +9,7 @@ import { AesGcmCredentialVault } from "../src/adapters/security/CredentialVault.
 import { hashApiKey } from "../src/adapters/security/apiKeys.js";
 import { measureStep, summarizeSession } from "./lib/benchmarkMetrics.js";
 import type { SessionResult, StepMetric } from "./lib/benchmarkMetrics.js";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { generateBenchmarkReport } from "./lib/generateBenchmarkReport.js";
 
 /**
@@ -325,12 +325,13 @@ async function main(): Promise<void> {
     }
   }
 
-  writeFileSync("benchmark-results.json", JSON.stringify(results, null, 2));
-  console.log("\nWrote benchmark-results.json");
+  mkdirSync("benchmarks", { recursive: true });
+  writeFileSync("benchmarks/benchmark-results.json", JSON.stringify(results, null, 2));
+  console.log("\nWrote benchmarks/benchmark-results.json");
 
   const report = generateBenchmarkReport(results);
-  writeFileSync("benchmark-report.md", report);
-  console.log("Wrote benchmark-report.md -- readable directly in git/GitHub, no rendering step needed.");
+  writeFileSync("benchmarks/benchmark-report.md", report);
+  console.log("Wrote benchmarks/benchmark-report.md -- readable directly in git/GitHub, no rendering step needed.");
 }
 
 main().catch((error) => {
