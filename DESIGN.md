@@ -205,22 +205,42 @@ for the schema itself.
 - [ ] No master-key rotation path (only one server's stored credential at a time).
 - [ ] Only one relay agent supported at a time; no admin visibility into which agents are
       connected or which servers currently have one.
-- [ ] **A real profiler, not just the one-off `measure_context_overhead.ts` script** —
-      raised 2026-07-30 while verifying the semantic-search change. Two genuinely
-      different things worth measuring, currently conflated:
-      1. Token savings — `measure_context_overhead.ts` still only measures the ORIGINAL
-         claim (fixed meta-tool set vs. every real tool's schema). It doesn't yet measure
-         `find_tool`'s NEW behavior: a top-10 semantic result is itself far smaller than
-         returning every permitted tool unranked, and that gap only grows with catalog
-         size — worth measuring for real once there's a deployment with a genuinely large
-         combined catalog (more real tools than Jira+SonarQube's ~90 already used here).
-      2. Resource consumption — embedding latency/memory are measured once, informally
-         (see `adapters/embeddings/LocalEmbedder.ts`'s docstring), not tracked
-         continuously. Worth a real profiler once this runs somewhere with actual
-         production load patterns to profile — building one against today's single-user
-         manual testing would mostly measure noise, not anything real.
-      Not blocking anything today; revisit once there's real multi-user traffic and/or a
-      larger combined tool catalog to make the measurement meaningful.
+- [x] ~~A real profiler, not just the one-off `measure_context_overhead.ts` script~~ —
+      done 2026-07-30: `scripts/benchmark_gateway_overhead.ts`. Real sessions (not
+      synthetic data) against real Jira/SonarQube, read-only tools only, across 4
+      scenarios × {1, 2} servers × {es, en} queries, plus a no-gateway direct-connection
+      baseline — writes `benchmark-results.json` + a self-contained
+      `benchmark-report.html` (Chart.js via CDN).
+
+      **Two real findings from an actual run**, not assumed:
+      - **`catalog_refresh`'s background refresh is genuinely invisible to the caller,
+        as designed** — the first `call_tool` against a server with an expired catalog
+        entry measured 6.0–7.5s, statistically indistinguishable from the same call
+        against an already-warm catalog (6.9–7.7s) across all four {server count ×
+        language} combinations. Confirms `void this.refreshCatalogIfStale(...).catch(...)`
+        (fire-and-forget, never awaited before responding — see
+        `ToolDiscoveryRouter.callTool`) actually behaves the way its own docstring
+        claims, not just in theory.
+      - **A real embedding miss has a real, measurable cost**: deliberately oblique
+        queries (e.g. "is everything okay today" for `system_ping`) missed the intended
+        tool on the first `find_tool` call in most runs, forcing the simulated retry
+        with clearer wording — adding 400-900 tokens and 0.7-2.6s per miss. Also found
+        the retry itself sometimes missed too (an oblique-enough query can fail even a
+        "good" rephrasing) — a genuine finding about `find_tool`'s real-world
+        reliability, not a hypothetical worth dismissing.
+      - **Direct connection (no gateway) costs 2-3x more tokens than the gateway's warm
+        happy path** even at this project's modest real scale (~60-90 combined tools):
+        23,997/29,861 tokens (1/2 servers) vs. 7,603/10,179 — a full `tools/list` dump
+        vs. find_tool's ranked top-K, consistent with (and a second, independent
+        confirmation of) the 97.1%-reduction claim `measure_context_overhead.ts`
+        already established at N=2 servers with a smaller synthetic catalog.
+
+      Real infra flakiness worth noting, not hidden: running this against a real hosted
+      Postgres (Neon) surfaced transient "Connection terminated unexpectedly" errors
+      from spawning many gateway sessions back-to-back — the pooled proxy needs a
+      moment to recognize a just-closed connection as free. Fixed with a short cooldown
+      between sessions and a retry-once-then-skip wrapper, rather than assuming
+      real infrastructure behaves like a local one.
 
 **Production readiness**
 - [ ] No automated tests for HTTP mode's own composition root wiring (only stdio mode's,
