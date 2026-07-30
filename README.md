@@ -21,6 +21,16 @@ npm run build
 TEST_GATEWAY_API_KEY=<from above> npx tsx scripts/manual_test_client.ts
 ```
 
+**`GATEWAY_ENCRYPTION_KEY` is a deployment-wide secret, not a per-machine or per-user
+one.** Generate it exactly once per deployment (one shared `DATABASE_URL`), then copy the
+*same* value to every machine that runs the gateway against that database — in stdio
+mode, that means every one of your own machines. Every stored credential is encrypted
+with whichever key was active when it was saved; generating a *new* key on a second
+machine (rather than copying the existing one) means that machine can never decrypt
+credentials saved from the first, even though both belong to the same user. HTTP mode
+sidesteps this entirely — only the one centrally-hosted process ever holds this key, and
+every device just talks to it as a client, see "Two ways to connect" below.
+
 See `scripts/README.md` for every operator tool (bootstrapping the first admin,
 registering servers, rotating credentials, viewing the audit log) and `migrations/README.md`
 for the schema itself.
