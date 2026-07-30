@@ -34,3 +34,12 @@ what these can cover.
 - `measure_context_overhead.ts` — the real measurement behind this project's "97.1%
   fewer tokens" claim (`gpt-tokenizer`'s actual encoding, not an estimate). Needs its own
   setup — see the script's own comment.
+- `benchmark_gateway_overhead.ts` — a fuller token/latency benchmark across 4 real
+  scenarios (happy path, catalog refresh, an embedding "miss" that needs a retry, and a
+  direct-connection-with-no-gateway baseline) × {1, 2} servers × {Spanish, English}
+  queries. Needs `GATEWAY_API_KEY`/`DATABASE_URL`/`GATEWAY_ENCRYPTION_KEY` for an identity
+  permitted on real "jira" and "sonarqube" servers (only read-only tools are called —
+  see the script's own plan). Writes `benchmark-results.json` and a self-contained
+  `benchmark-report.html` (Chart.js via CDN, open directly in a browser) — both
+  gitignored, regenerate rather than trust a stale copy. See DESIGN.md for what a real
+  run found.
