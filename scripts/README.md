@@ -39,12 +39,14 @@ what these can cover.
   direct-connection-with-no-gateway baseline) × {1, 2} servers × {Spanish, English}
   queries. Needs `GATEWAY_API_KEY`/`DATABASE_URL`/`GATEWAY_ENCRYPTION_KEY` for an identity
   permitted on real "jira" and "sonarqube" servers (only read-only tools are called —
-  see the script's own plan). Writes `benchmark-results.json` and `benchmark-report.md`
-  — plain Markdown, readable directly in `git show`/GitHub with no rendering step,
-  including a "Conclusions" section computed directly from that run's own numbers. Both
-  files are tracked as a dated snapshot of one real run (see their own commit for when),
-  not a live guarantee; re-run for current numbers rather than trusting an old copy. See
-  DESIGN.md for what this snapshot found.
-- `regen_benchmark_report.ts` — rebuilds `benchmark-report.md` from an existing
-  `benchmark-results.json` without re-running any real sessions — only useful after
-  changing the report's own rendering/analysis code, not the measurements themselves.
+  see the script's own plan). Writes `benchmarks/benchmark-results.json` and
+  `benchmarks/benchmark-report.md` — plain Markdown, readable directly in `git
+  show`/GitHub with no rendering step, including a "Conclusions" section computed
+  directly from that run's own numbers. Both files are tracked as a dated snapshot of
+  one real run (see their own commit for when), not a live guarantee; re-run for
+  current numbers rather than trusting an old copy. See DESIGN.md for what this
+  snapshot found.
+- `regen_benchmark_report.ts` — rebuilds `benchmarks/benchmark-report.md` from an
+  existing `benchmarks/benchmark-results.json` without re-running any real sessions —
+  only useful after changing the report's own rendering/analysis code, not the
+  measurements themselves.

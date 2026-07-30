@@ -253,8 +253,8 @@ for the schema itself.
       done 2026-07-30: `scripts/benchmark_gateway_overhead.ts`. Real sessions (not
       synthetic data) against real Jira/SonarQube, read-only tools only, across 4
       scenarios × {1, 2} servers × {es, en} queries, plus a no-gateway direct-connection
-      baseline — writes `benchmark-results.json` + a self-contained
-      `benchmark-report.html` (Chart.js via CDN).
+      baseline — writes `benchmarks/benchmark-results.json` + `benchmarks/benchmark-report.md`
+      (plain Markdown, readable directly in `git show`/GitHub, no rendering step).
 
       **Two real findings from an actual run**, not assumed:
       - **`catalog_refresh`'s background refresh is genuinely invisible to the caller,
