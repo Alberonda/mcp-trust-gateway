@@ -1,5 +1,49 @@
 # MCP Trust Gateway — Design
 
+## ⚠️ Project paused (2026-07-30)
+
+Paused until there's a machine hosted inside the corporate network (Mercedes-Benz VPN/
+certificates) to run this on. Real blockers found while testing HTTP mode end to end
+against the actual deployed servers (Render + Neon), not theoretical:
+
+- **The publicly-hosted gateway (Render) cannot reach corporate-internal services at
+  all** — `git.i.mercedes-benz.com`, `*.corpintra.net` (Jenkins/SonarQube) are only
+  reachable from inside that network. A public cloud process has no path to them,
+  full stop.
+- **`github-mcp-server` is a compiled binary, not an npm package `npx`-installable on
+  demand** — it has to be downloaded once onto whichever machine actually runs it.
+  Registering it with a local absolute path (`~/.copilot/bin/github-mcp-server`) works
+  from stdio mode (same machine) but fails with `spawn ENOENT` from Render, which has
+  no access to that file at all. Found by actually testing a real HTTP-mode call, not
+  by inspecting config.
+- **The relay-agent pattern (`relay-agent/`) is the architecturally correct fix for
+  both** — it already supports exactly this (execute on a machine with real network/
+  binary access, take orders from the centralized gateway, never decide anything
+  itself, never hold the master key). But it only pays for its own complexity with
+  more than one real user needing centralized, admin-controlled policy — for solo use
+  on one machine, running a relay-agent on that SAME machine just adds a round trip to
+  Render and back for zero benefit over running the gateway itself locally (stdio
+  mode already gives 100% of the same governance with zero network hops).
+- Handing the client (the calling agent) a decrypted credential directly instead of
+  ever routing through relay was considered and explicitly rejected — it would undo
+  the three things this project actually exists for: a real per-call audit trail
+  (vs. only auditing "credential issuance"), the credential never leaving the vault in
+  plaintext (vs. handing raw secrets to an LLM's own context), and continuous
+  per-call revocability (vs. a credential the client can keep using directly once
+  handed out). See conversation 2026-07-30 for the full reasoning if this comes up
+  again.
+
+**What still works today, unaffected by any of this**: stdio mode, run locally on a
+machine that's already inside whatever network its real upstream servers need (see
+README's "Two ways to connect"). The gap is specifically HTTP mode's *raison d'être* —
+one centrally-hosted process reachable by a team — for a team whose real tools are
+corporate-internal. Revisit this once there's a real place to host that process inside
+the corporate network; nothing about the code needs to change, only where it runs.
+
+Render and the Neon database backing it have been paused/stopped as of this date (no
+API/CLI access available in that session to do so directly — see the operator's own
+dashboards for exact status if resuming).
+
 ## What this is and why
 
 A proxy that sits between any MCP client (Devin CLI, Claude Desktop, Cursor...) and one
